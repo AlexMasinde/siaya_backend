@@ -1,0 +1,52 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+  ManyToMany,
+  JoinColumn,
+} from 'typeorm';
+import { User } from './User';
+import { Participant } from './Participant';
+import { CheckInLog } from './CheckInLog';
+
+@Entity('events')
+export class Event {
+  @PrimaryGeneratedColumn('uuid')
+  eventId: string;
+
+  @Column({ type: 'varchar', length: 255 })
+  eventName: string;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  location: string | null;
+
+  @Column({ type: 'date', nullable: true })
+  date: Date | null;
+
+  @Column({ type: 'uuid' })
+  createdById: string;
+
+  @ManyToOne(() => User, (user) => user.events)
+  @JoinColumn({ name: 'createdById' })
+  createdBy: User;
+
+  @CreateDateColumn()
+  createdAt: Date;
+
+  @UpdateDateColumn()
+  updatedAt: Date;
+
+  @OneToMany(() => Participant, (participant) => participant.event)
+  participants: Participant[];
+
+  @ManyToMany(() => User, (user) => user.assignedEvents)
+  assignedUsers: User[];
+
+  @OneToMany(() => CheckInLog, (checkInLog) => checkInLog.event)
+  checkInLogs: CheckInLog[];
+}
+
