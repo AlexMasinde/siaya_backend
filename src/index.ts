@@ -34,7 +34,7 @@ app.use((req, res, next) => {
     ? ['http://localhost:3000', 'http://localhost:3001', 'https://preview-frontend-kzmg8koshmgm3xtu2v62.vusercontent.net']
     : [
         env.FRONTEND_URL,
-        'https://attendance-ke.vercel.app/',
+        'https://attendance-ke.vercel.app',
         'https://events.uda.ke',
         'https://www.events.uda.ke',
         'https://preview-frontend-kzmg8koshmgm3xtu2v62.vusercontent.net'
