@@ -46,6 +46,8 @@ export interface FormattedVoterInfo {
   constituency: string;
   ward: string;
   pollingCenter: string;
+  isRegisteredVoter: boolean;
+  isInvited: boolean;
 }
 
 export const lookupVoter = async (
@@ -112,19 +114,23 @@ export const lookupVoter = async (
         constituency: registeredVoters.constituency,
         ward: registeredVoters.ward,
         pollingCenter: registeredVoters.polling_center,
+        isRegisteredVoter: true,
+        isInvited: false, // Not in our local invite list
       };
     } else if (adultPopulation) {
       // Fallback to adult population data
-      // Use event filters for location data as requested
+      // KEY DIFFERENCE: Return empty strings for location if not a registered voter
       return {
         idNumber: adultPopulation.id_number,
         name: adultPopulation.full_name,
         dateOfBirth: adultPopulation.date_of_birth,
         sex: adultPopulation.sex,
-        county: filters.county || '',
-        constituency: filters.constituency || '',
-        ward: filters.ward || '',
-        pollingCenter: 'Adult Population Registry', // Indicate source
+        county: '',
+        constituency: '',
+        ward: '',
+        pollingCenter: '',
+        isRegisteredVoter: false,
+        isInvited: false, // Not in our local invite list
       };
     }
 
@@ -139,4 +145,3 @@ export const lookupVoter = async (
     throw error;
   }
 };
-

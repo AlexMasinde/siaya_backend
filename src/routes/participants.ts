@@ -49,16 +49,64 @@ router.post(
         relations: ['checkInLogs'],
       });
 
-      if (participants.length === 0) {
-        res.status(404).json({ message: 'Participant not found' });
+      if (participants.length > 0) {
+        res.json({
+          message: 'Participant found',
+          participant: {
+            ...participants[0],
+            isInvited: true,
+          },
+          allMatches: participants,
+        });
         return;
       }
 
-      res.json({
-        message: 'Participant found',
-        participant: participants[0], // Return first match if multiples exist
-        allMatches: participants,
-      });
+      // If not found locally, try external lookup
+      // Get event to fallback filter details
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({ where: { eventId } });
+
+      if (!event) {
+         // Should not happen as we removed the check earlier? No, check is removed in this block.
+         // Wait, the original code I viewed didn't verify event inside the try block?
+         // It verified it at line 94? No that was checkin.
+         // In search (lines 31-70), I don't see event verification in the snippet shown in 2616!
+         // Ah, wait. The snippet 2616 lines 34-42 checks params.
+         // Then it goes straight to participant repo at line 44.
+         // So I need to fetch event for the filters if I want to use event location as fallback.
+         res.status(404).json({ message: 'Event not found (internal check)' });
+         return;
+      }
+
+      const filters: {
+        county?: string;
+        constituency?: string;
+        ward?: string;
+      } = {};
+
+      if (event.county) filters.county = event.county;
+      if (event.constituency) filters.constituency = event.constituency;
+      if (event.ward) filters.ward = event.ward;
+
+      try {
+        const voterInfo = await lookupVoter(idNumber, filters);
+
+        if (!voterInfo) {
+          res.status(404).json({ message: 'Participant not found' });
+          return;
+        }
+
+        res.json({
+          message: 'Participant found in registry',
+          participant: voterInfo,
+        });
+      } catch (error) {
+        logger.error('Voter lookup error:', {
+          error: error instanceof Error ? error.message : String(error),
+          idNumber,
+        });
+        res.status(404).json({ message: 'Participant not found' });
+      }
     } catch (error) {
       logger.error('Search participant error:', {
         error: error instanceof Error ? error.message : String(error),
@@ -78,6 +126,16 @@ router.post(
       const {
         eventId,
         idNumber,
+        phoneNumber,
+        name,
+        dateOfBirth,
+        sex,
+        county,
+        constituency,
+        ward,
+        pollingCenter,
+        isRegisteredVoter,
+        isInvited,
       } = req.body;
 
       if (!eventId || !idNumber) {
@@ -103,7 +161,7 @@ router.post(
       const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
 
       // Find participant
-      const participant = await participantRepository.findOne({
+      let participant = await participantRepository.findOne({
         where: {
           eventId,
           idNumber,
@@ -111,8 +169,52 @@ router.post(
       });
 
       if (!participant) {
-        res.status(404).json({ message: 'Participant not found. Please register first.' });
-        return;
+        // If not found locally, we expect full details for creation (from fallback)
+         if (!name || !dateOfBirth || !sex) {
+            res.status(400).json({
+               message: 'Participant details (name, dob, sex) required for new entry',
+            });
+            return;
+         }
+
+        // Create new participant
+        participant = participantRepository.create({
+          id: uuidv4(),
+          eventId,
+          idNumber,
+          name,
+          dateOfBirth: new Date(dateOfBirth),
+          sex,
+          county: county || null,
+          constituency: constituency || null,
+          ward: ward || null,
+          pollingCenter: pollingCenter || null,
+          phoneNumber: phoneNumber || null,
+          isRegisteredVoter: isRegisteredVoter !== undefined ? isRegisteredVoter : false,
+          isInvited: isInvited !== undefined ? isInvited : false,
+        });
+        await participantRepository.save(participant);
+      } else {
+         // Update existing participant
+         // If phone number is provided and different, update it
+         if (phoneNumber && phoneNumber.trim() !== '' && participant.phoneNumber !== phoneNumber) {
+            participant.phoneNumber = phoneNumber;
+         }
+         
+         // Update isRegisteredVoter if provided
+         if (isRegisteredVoter !== undefined) {
+             participant.isRegisteredVoter = isRegisteredVoter;
+         }
+
+         // Logic for isInvited: 
+         // If already true in DB, keep it true (they were on the list).
+         // If false in DB, update based on request (maybe late invite logic?).
+         // For now, if provided and current is false, update it.
+         if (isInvited !== undefined && !participant.isInvited) {
+             participant.isInvited = isInvited;
+         }
+
+         await participantRepository.save(participant);
       }
 
       // Check if already checked in today

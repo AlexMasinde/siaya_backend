@@ -57,6 +57,12 @@ export class Participant {
   @JoinColumn({ name: 'eventId' })
   event: Event | null;
 
+  @Column({ type: 'boolean', default: false })
+  isRegisteredVoter: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  isInvited: boolean;
+
   @OneToMany(() => CheckInLog, (checkInLog) => checkInLog.participant)
   checkInLogs: CheckInLog[];
 

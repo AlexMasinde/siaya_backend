@@ -350,7 +350,70 @@ router.get(
       // 2. Total Participants
       const totalParticipants = await participantRepository.count({ where: { eventId } });
 
-      // 3. Breakdowns (Aggregations)
+      // 3. New Categories Breakdown (Using QueryBuilder for robust NULL handling)
+      
+      // Invited: isInvited = true
+      const invitedCheckIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('participant.isInvited = :isInvited', { isInvited: true })
+        .getCount();
+
+      // Registered Walk-in: isInvited != true (Regardless of voter status)
+      const registeredWalkIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('(participant.isInvited = :isInvitedFalse OR participant.isInvited IS NULL)', { isInvitedFalse: false })
+        .getCount();
+
+      // Adult Population: isInvited != true AND isRegisteredVoter != true
+      const adultPopulationCheckIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('(participant.isInvited = :isInvitedFalse OR participant.isInvited IS NULL)', { isInvitedFalse: false })
+        .andWhere('(participant.isRegisteredVoter = :isRegisteredVoterFalse OR participant.isRegisteredVoter IS NULL)', { isRegisteredVoterFalse: false })
+        .getCount();
+
+      // NEW STATS: Breakdown by Registration Status
+      
+      // Invited & Registered
+      const invitedRegisteredCheckIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('participant.isInvited = :isInvited', { isInvited: true })
+        .andWhere('participant.isRegisteredVoter = :isRegisteredVoter', { isRegisteredVoter: true })
+        .getCount();
+
+      // Invited & NOT Registered
+      const invitedNotRegisteredCheckIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('participant.isInvited = :isInvited', { isInvited: true })
+        .andWhere('(participant.isRegisteredVoter = :isRegisteredVoterFalse OR participant.isRegisteredVoter IS NULL)', { isRegisteredVoterFalse: false })
+        .getCount();
+
+      // Total Registered (All check-ins)
+      const totalRegisteredCheckIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('participant.isRegisteredVoter = :isRegisteredVoter', { isRegisteredVoter: true })
+        .getCount();
+
+      // Total NOT Registered (All check-ins)
+      const totalNotRegisteredCheckIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .leftJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('(participant.isRegisteredVoter = :isRegisteredVoterFalse OR participant.isRegisteredVoter IS NULL)', { isRegisteredVoterFalse: false })
+        .getCount();
+
+      // 4. Breakdowns (Aggregations)
       const getBreakdown = async (field: string) => {
         const stats = await participantRepository
           .createQueryBuilder('p')
@@ -359,13 +422,14 @@ router.get(
           .addSelect('COUNT(DISTINCT p.id)', 'count') // Count unique participants
           .where('p.eventId = :eventId', { eventId })
           .andWhere('l.eventId = :eventId', { eventId }) // Ensure validation against check-in event ID too
-          .andWhere(`p.${field} IS NOT NULL`)
-          .andWhere(`p.${field} != ''`)
           .groupBy(`p.${field}`)
           .orderBy('count', 'DESC')
           .getRawMany();
         
-        return stats.map(s => ({ name: s.name, count: parseInt(s.count) || 0 }));
+        return stats.map(s => ({ 
+          name: (s.name === null || s.name === '' || s.name === undefined) ? 'NOT STATED' : s.name, 
+          count: parseInt(s.count) || 0 
+        }));
       };
 
       const [byCounty, byConstituency, byWard, byGroup] = await Promise.all([
@@ -378,6 +442,13 @@ router.get(
       res.json({
         total_check_ins: totalCheckIns,
         total_participants: totalParticipants,
+        invited_check_ins: invitedCheckIns,
+        registered_walk_ins: registeredWalkIns,
+        adult_population_check_ins: adultPopulationCheckIns,
+        invited_registered_check_ins: invitedRegisteredCheckIns,
+        invited_not_registered_check_ins: invitedNotRegisteredCheckIns,
+        total_registered_check_ins: totalRegisteredCheckIns,
+        total_not_registered_check_ins: totalNotRegisteredCheckIns,
         breakdowns: {
           county: byCounty,
           constituency: byConstituency,
@@ -454,7 +525,9 @@ router.get(
             county: log.participant.county,
             constituency: log.participant.constituency,
             ward: log.participant.ward,
-            pollingCenter: log.participant.pollingCenter
+            pollingCenter: log.participant.pollingCenter,
+            isRegisteredVoter: log.participant.isRegisteredVoter,
+            isInvited: log.participant.isInvited
           },
           checkedInBy: log.checkedInBy ? {
             id: log.checkedInBy.id,

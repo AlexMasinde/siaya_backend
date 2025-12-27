@@ -24,6 +24,15 @@ export class Event {
   @Column({ type: 'varchar', length: 255, nullable: true })
   location: string | null;
 
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  county: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  constituency: string | null;
+
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  ward: string | null;
+
   @Column({ type: 'date', nullable: true })
   date: Date | null;
 
