@@ -97,7 +97,7 @@ router.post(
         }
 
         res.json({
-          message: 'Participant found in registry',
+          message: 'Participant found',
           participant: voterInfo,
         });
       } catch (error) {
