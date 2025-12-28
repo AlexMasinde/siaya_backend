@@ -453,18 +453,16 @@ export class PdfService {
             }
           });
       } else {
-          // Fallback or Production config - adjust as needed for production environment
-            logger.info('Launching Local Puppeteer (Production Mode)...');
-            // Check if executable path is needed for production environment 
-            browser = await puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox'],
-                defaultViewport: {
-                  width: 1400, 
-                  height: 900,
-                  deviceScaleFactor: 2
-                }
-             });
+          logger.info('Connecting to Remote Browserless (Production Mode)...');
+          const browserlessUrl = 'wss://production-sfo.browserless.io?token=2TWhMjjwY2OITnpf9f3886140c278370a3319ac18cb3aa3df';
+          browser = await puppeteer.connect({ 
+             browserWSEndpoint: browserlessUrl,
+             defaultViewport: {
+                 width: 1400, 
+                 height: 900,
+                 deviceScaleFactor: 2
+             }
+           });
       }
 
       const page = await browser.newPage();
