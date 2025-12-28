@@ -550,7 +550,7 @@ router.get(
 // Generate Event Report PDF
 router.get(
   '/:eventId/report',
-  authenticate,
+  // authenticate, // REMOVED AUTH
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { eventId } = req.params;
@@ -586,8 +586,8 @@ router.get(
 // Download Global PDF Report
 router.get(
   '/reports/global/download',
-  authenticate,
-  requireSuperAdmin,
+  // authenticate, // REMOVED AUTH
+  // requireSuperAdmin, // REMOVED AUTH
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const pdfService = PdfService.getInstance();
@@ -614,8 +614,8 @@ router.get(
 // Get Global Analytics JSON (For Frontend Page)
 router.get(
     '/analytics/global',
-    authenticate,
-    requireSuperAdmin,
+    // authenticate, // REMOVED AUTH
+    // requireSuperAdmin, // REMOVED AUTH
     async (req: AuthRequest, res: Response): Promise<void> => {
       try {
         const pdfService = PdfService.getInstance();
@@ -640,8 +640,8 @@ router.get(
 // Get Staff Analytics
 router.get(
   '/analytics/staff',
-  authenticate,
-  requireSuperAdmin,
+  // authenticate, // REMOVED AUTH
+  // requireSuperAdmin, // REMOVED AUTH
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const pdfService = PdfService.getInstance();
@@ -657,8 +657,8 @@ router.get(
 // Download Staff PDF Report
 router.get(
   '/reports/staff/download',
-  authenticate,
-  requireSuperAdmin,
+  // authenticate, // REMOVED AUTH
+  // requireSuperAdmin, // REMOVED AUTH
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const pdfService = PdfService.getInstance();
