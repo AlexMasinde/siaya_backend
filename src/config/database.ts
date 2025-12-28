@@ -3,6 +3,7 @@ import { User } from '../entities/User';
 import { Event } from '../entities/Event';
 import { Participant } from '../entities/Participant';
 import { CheckInLog } from '../entities/CheckInLog';
+
 import { env } from './env';
 import logger from './logger';
 

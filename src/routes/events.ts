@@ -3,6 +3,7 @@ import { AppDataSource } from '../config/database';
 import { Event } from '../entities/Event';
 import { User, UserRole } from '../entities/User';
 import { CheckInLog } from '../entities/CheckInLog';
+import { PollingCenter } from '../entities/PollingCenter';
 import { Participant } from '../entities/Participant';
 import { In } from 'typeorm';
 import { authenticate, AuthRequest, requireAdmin, requireSuperAdmin } from '../middleware/auth';
