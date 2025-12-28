@@ -556,8 +556,8 @@ router.get(
       const { eventId } = req.params;
       const pdfService = PdfService.getInstance();
       
-      // Use the validated token from the auth middleware
-      const buffer = await pdfService.generateEventReport(eventId, req.token);
+      const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
+      const buffer = await pdfService.generateEventReport(eventId, token);
 
       const eventRepository = AppDataSource.getRepository(Event);
       const event = await eventRepository.findOne({ where: { eventId } });
@@ -592,8 +592,10 @@ router.get(
     try {
       const pdfService = PdfService.getInstance();
       
-      // Use the validated token from the auth middleware
-      const pdfBuffer = await pdfService.generateGlobalReport(req.token);
+      // Token for puppeteer authentication
+      const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
+
+      const pdfBuffer = await pdfService.generateGlobalReport(token);
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'attachment; filename=UDA_Sensitization_Phase_3.pdf');
@@ -661,8 +663,8 @@ router.get(
     try {
       const pdfService = PdfService.getInstance();
       
-      // Use the validated token from the auth middleware
-      const buffer = await pdfService.generateStaffReport(req.token);
+      const token = req.cookies.token || req.headers.authorization?.split(' ')[1];
+      const buffer = await pdfService.generateStaffReport(token);
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'attachment; filename=Staff_Performance_Report.pdf');
