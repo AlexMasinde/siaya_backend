@@ -5,6 +5,7 @@ import { User, UserRole } from '../entities/User';
 
 export interface AuthRequest extends Request {
   user?: User;
+  token?: string;
 }
 
 export const authenticate = async (
@@ -41,6 +42,7 @@ export const authenticate = async (
       }
 
       req.user = user;
+      req.token = token;
       next();
     } catch (error) {
       res.status(401).json({ message: 'Invalid or expired token' });
