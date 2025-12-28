@@ -412,21 +412,21 @@ export class PdfService {
   }
 
   public async generateStaffReport(token?: string): Promise<Buffer> {
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
       const reportUrl = `${baseUrl}/reports/staff?token=${token || ''}`;
       logger.info(`Generating Staff Performance Report from: ${reportUrl}`);
       return this.generatePdfFromUrl(reportUrl);
   }
 
   public async generateGlobalReport(token?: string): Promise<Buffer> {
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
       const reportUrl = `${baseUrl}/reports/global?token=${token || ''}`;
       logger.info(`Generating Global Report from: ${reportUrl}`);
       return this.generatePdfFromUrl(reportUrl);
   }
 
   async generateEventReport(eventId: string, token?: string): Promise<Buffer> {
-      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
       const reportUrl = `${baseUrl}/reports/event/${eventId}?token=${token || ''}`;
       logger.info(`Generating Event Report from: ${reportUrl}`);
       
