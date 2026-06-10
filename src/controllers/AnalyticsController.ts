@@ -28,9 +28,9 @@ export class AnalyticsController {
           groupByField = 'participant.ward';
           parentFilterField = 'participant.constituency';
           break;
-        case 'group':
-          groupByField = 'participant.group';
-          // group usually doesn't have a parent filter in this hierarchy context, but if needed we can add checks
+        case 'polling_center':
+          groupByField = 'participant.pollingCenter';
+          parentFilterField = 'participant.ward';
           break;
         default:
           return res.status(400).json({ message: 'Invalid level' });

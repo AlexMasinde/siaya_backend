@@ -292,7 +292,7 @@ router.get(
 
       // Build query based on user role
       let queryBuilder = userRepository.createQueryBuilder('user')
-        .select(['user.id', 'user.name', 'user.email', 'user.role', 'user.adminId', 'user.createdAt'])
+        .select(['user.id', 'user.name', 'user.email', 'user.role', 'user.adminId', 'user.phoneNumber', 'user.createdAt'])
         .orderBy('user.createdAt', 'DESC');
 
       const userRole = req.user!.role as string;
@@ -371,6 +371,13 @@ router.post(
         return;
       }
 
+      const normalizedPhone = smsService.normalizePhoneNumber(phoneNumber);
+      if (typeof normalizedPhone === 'object' && 'error' in normalizedPhone) {
+        res.status(400).json({ message: 'Invalid phone number format' });
+        return;
+      }
+      const displayPhone = `0${normalizedPhone.slice(3)}`;
+
       const userRepository = AppDataSource.getRepository(User);
 
       // Check if user already exists
@@ -394,14 +401,14 @@ router.post(
         password: hashedPassword,
         role: UserRole.USER,
         adminId: req.user!.id, // Assign to the creating admin
-        phoneNumber,
+        phoneNumber: displayPhone,
       });
 
       await userRepository.save(user);
 
       // Send SMS with credentials
       const smsSent = await smsService.sendUserCredentials(
-        phoneNumber,
+        displayPhone,
         email,
         randomPassword,
       );
@@ -434,6 +441,172 @@ router.post(
       }
     } catch (error) {
       logger.error('Create user error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+const SMS_SEND_DELAY_MS = 2000;
+const MAX_RESEND_BATCH_SIZE = 30;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function canManageUser(actor: User, target: User): boolean {
+  const actorRole = actor.role as string;
+  if (actorRole === UserRole.SUPER_ADMIN || actorRole === 'super_admin') {
+    return true;
+  }
+  return target.adminId === actor.id;
+}
+
+// Resend passwords via SMS (queued sequentially)
+router.post(
+  '/users/resend-passwords',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { userIds } = req.body as { userIds?: string[] };
+
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        res.status(400).json({ message: 'userIds array is required' });
+        return;
+      }
+
+      if (userIds.length > MAX_RESEND_BATCH_SIZE) {
+        res.status(400).json({
+          message: `You can resend passwords for at most ${MAX_RESEND_BATCH_SIZE} users at a time`,
+        });
+        return;
+      }
+
+      const userRepository = AppDataSource.getRepository(User);
+      const actor = req.user!;
+      const results: Array<{
+        userId: string;
+        name: string;
+        email: string;
+        status: 'success' | 'error' | 'skipped';
+        message?: string;
+      }> = [];
+
+      const usersToProcess: User[] = [];
+      for (const userId of userIds) {
+        const target = await userRepository.findOne({ where: { id: userId } });
+        if (!target) {
+          results.push({
+            userId,
+            name: '',
+            email: '',
+            status: 'skipped',
+            message: 'User not found',
+          });
+          continue;
+        }
+
+        if (target.id === actor.id) {
+          results.push({
+            userId: target.id,
+            name: target.name,
+            email: target.email,
+            status: 'skipped',
+            message: 'Cannot reset your own password here',
+          });
+          continue;
+        }
+
+        const targetRole = target.role as string;
+        if (targetRole === UserRole.SUPER_ADMIN || targetRole === 'super_admin') {
+          results.push({
+            userId: target.id,
+            name: target.name,
+            email: target.email,
+            status: 'skipped',
+            message: 'Cannot reset super admin passwords',
+          });
+          continue;
+        }
+
+        if (!canManageUser(actor, target)) {
+          results.push({
+            userId: target.id,
+            name: target.name,
+            email: target.email,
+            status: 'skipped',
+            message: 'Access denied',
+          });
+          continue;
+        }
+
+        if (!target.phoneNumber?.trim()) {
+          results.push({
+            userId: target.id,
+            name: target.name,
+            email: target.email,
+            status: 'skipped',
+            message: 'No phone number on file',
+          });
+          continue;
+        }
+
+        const normalizedPhone = smsService.normalizePhoneNumber(target.phoneNumber);
+        if (typeof normalizedPhone === 'object' && 'error' in normalizedPhone) {
+          results.push({
+            userId: target.id,
+            name: target.name,
+            email: target.email,
+            status: 'skipped',
+            message: 'Invalid phone number on file',
+          });
+          continue;
+        }
+
+        usersToProcess.push(target);
+      }
+
+      for (let i = 0; i < usersToProcess.length; i++) {
+        const target = usersToProcess[i];
+        const newPassword = generateRandomPassword();
+        target.password = await hashPassword(newPassword);
+        await userRepository.save(target);
+
+        const smsSent = await smsService.sendPasswordReset(
+          target.phoneNumber!,
+          target.email,
+          newPassword,
+        );
+
+        results.push({
+          userId: target.id,
+          name: target.name,
+          email: target.email,
+          status: smsSent ? 'success' : 'error',
+          message: smsSent
+            ? 'New password sent via SMS'
+            : 'Password reset but SMS failed to send',
+        });
+
+        if (i < usersToProcess.length - 1) {
+          await sleep(SMS_SEND_DELAY_MS);
+        }
+      }
+
+      const successCount = results.filter((r) => r.status === 'success').length;
+      const errorCount = results.filter((r) => r.status === 'error').length;
+      const skippedCount = results.filter((r) => r.status === 'skipped').length;
+
+      res.json({
+        message: `Password resend complete. ${successCount} sent, ${errorCount} failed, ${skippedCount} skipped.`,
+        results,
+        summary: { successCount, errorCount, skippedCount },
+      });
+    } catch (error) {
+      logger.error('Resend passwords error:', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });

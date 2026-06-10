@@ -12,6 +12,14 @@ import {
 import { User } from './User';
 import { Participant } from './Participant';
 import { CheckInLog } from './CheckInLog';
+import { PollingCenter } from './PollingCenter';
+
+export enum EventScopeType {
+  COUNTY = 'county',
+  CONSTITUENCY = 'constituency',
+  WARD = 'ward',
+  POLLING_CENTER = 'polling_center',
+}
 
 @Entity('events')
 export class Event {
@@ -32,6 +40,20 @@ export class Event {
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   ward: string | null;
+
+  @Column({
+    type: 'enum',
+    enum: EventScopeType,
+    nullable: true,
+  })
+  scopeType: EventScopeType | null;
+
+  @Column({ type: 'int', nullable: true })
+  pollingCenterId: number | null;
+
+  @ManyToOne(() => PollingCenter, { nullable: true })
+  @JoinColumn({ name: 'pollingCenterId' })
+  pollingCenter: PollingCenter | null;
 
   @Column({ type: 'date', nullable: true })
   date: Date | null;

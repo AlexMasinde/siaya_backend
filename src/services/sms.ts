@@ -13,17 +13,27 @@ class SmsService {
     this.source = env.SMS_LEOPARD_SOURCE;
   }
 
-  private sanitizePhoneNumber(phoneNumber: string): string | { error: string } {
-    let formattedMobileNumber = phoneNumber.replace(/^\+/, ''); // Remove leading '+'
-    
+  normalizePhoneNumber(phoneNumber: string): string | { error: string } {
+    let formattedMobileNumber = String(phoneNumber).trim().replace(/^\+/, '');
+
+    if (/^\d+(\.\d+)?e[+-]?\d+$/i.test(formattedMobileNumber)) {
+      formattedMobileNumber = String(Math.round(Number(formattedMobileNumber)));
+    } else if (formattedMobileNumber.includes('.') && !formattedMobileNumber.includes('e')) {
+      formattedMobileNumber = formattedMobileNumber.split('.')[0];
+    }
+
+    formattedMobileNumber = formattedMobileNumber.replace(/\s+/g, '');
+
+    if (/^[17]\d{8}$/.test(formattedMobileNumber)) {
+      formattedMobileNumber = `0${formattedMobileNumber}`;
+    }
+
     if (!formattedMobileNumber.startsWith('254')) {
       formattedMobileNumber = '254' + formattedMobileNumber.replace(/^0+/, '');
     }
-    
-    const valid = /^(\+254|254|0|)?[ ]?([7][0-9]|[1][0-1])[0-9][ ]?[0-9]{6}/.test(
-      formattedMobileNumber
-    );
-    
+
+    const valid = /^254[71]\d{8}$/.test(formattedMobileNumber);
+
     if (!valid) {
       return { error: 'Invalid phone number' };
     }
@@ -31,23 +41,23 @@ class SmsService {
     return formattedMobileNumber;
   }
 
-  async sendUserCredentials(phoneNumber: string, email: string, password: string): Promise<boolean> {
+  private sanitizePhoneNumber(phoneNumber: string): string | { error: string } {
+    return this.normalizePhoneNumber(phoneNumber);
+  }
+
+  private async sendMessage(phoneNumber: string, message: string): Promise<boolean> {
     try {
       const sanitized = this.sanitizePhoneNumber(phoneNumber);
-      
+
       if (typeof sanitized === 'object' && 'error' in sanitized) {
         logger.error('Invalid phone number for SMS:', { phoneNumber, error: sanitized.error });
         return false;
       }
 
-      const message = `Welcome to UDA Events! Your account has been created.\nEmail: ${email}\nPassword: ${password}`;
-      
       const url = `https://api.smsleopard.com/v1/sms/send?message=${encodeURIComponent(message)}&source=${this.source}&username=${this.username}&password=${encodeURIComponent(this.password)}&destination=${sanitized}`;
 
-      logger.info('Sending SMS via URL:', { url: url.replace(this.password, '***') }); // Log URL with masked password
-
       await axios.get(url);
-      
+
       logger.info('SMS sent successfully', { phoneNumber: sanitized });
       return true;
     } catch (error) {
@@ -57,6 +67,16 @@ class SmsService {
       });
       return false;
     }
+  }
+
+  async sendUserCredentials(phoneNumber: string, email: string, password: string): Promise<boolean> {
+    const message = `Welcome to UDA Events! Your account has been created.\nEmail: ${email}\nPassword: ${password}`;
+    return this.sendMessage(phoneNumber, message);
+  }
+
+  async sendPasswordReset(phoneNumber: string, email: string, password: string): Promise<boolean> {
+    const message = `UDA Events password reset.\nEmail: ${email}\nNew password: ${password}`;
+    return this.sendMessage(phoneNumber, message);
   }
 }
 

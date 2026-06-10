@@ -321,7 +321,8 @@ router.get(
         duplicates, 
         county, 
         constituency, 
-        ward, 
+        ward,
+        pollingCenter,
         noPhone,
         search,
         page,
@@ -354,8 +355,12 @@ router.get(
         query = query.andWhere('p.ward = :ward', { ward });
       }
 
+      if (pollingCenter) {
+        query = query.andWhere('p.pollingCenter = :pollingCenter', { pollingCenter });
+      }
+
       if (search) {
-        query = query.andWhere('(p.name ILIKE :search OR p.idNumber ILIKE :search)', { search: `%${search}%` });
+        query = query.andWhere('(p.name LIKE :search OR p.idNumber LIKE :search)', { search: `%${search}%` });
       }
 
       if (duplicates === 'true') {

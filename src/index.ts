@@ -11,6 +11,7 @@ import authRoutes from './routes/auth';
 import eventRoutes from './routes/events';
 import participantRoutes from './routes/participants';
 import analyticsRoutes from './routes/analytics';
+import jurisdictionRoutes from './routes/jurisdictions';
 
 const app = express();
 
@@ -50,7 +51,7 @@ app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
   }
   
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   res.header('Access-Control-Expose-Headers', 'Content-Type, Authorization');
   
@@ -76,6 +77,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/participants', participantRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/jurisdictions', jurisdictionRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
