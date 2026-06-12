@@ -56,12 +56,12 @@ export class PdfService {
   private getAgeGroup(age: number | null): string {
     if (age === null) return 'NOT STATED';
     if (age < 18) return 'Under 18';
-    if (age >= 18 && age < 27) return '18-27';
-    if (age >= 27 && age < 35) return '27-35';
-    if (age >= 35 && age < 50) return '35-50';
-    if (age >= 50 && age < 65) return '50-64';
-    if (age >= 65) return '65+';
-    return 'NOT STATED';
+    if (age <= 24) return '18-24';
+    if (age <= 34) return '25-34';
+    if (age <= 44) return '35-44';
+    if (age <= 54) return '45-54';
+    if (age <= 64) return '55-64';
+    return '65+';
   }
 
   private normalizeGender(rawGender: string | null | undefined): string {
@@ -108,7 +108,7 @@ export class PdfService {
       }, {} as Record<string, number>);
 
       // Sort Age Stats Ascending
-      const ageOrder = ['18-27', '27-35', '35-50', '50-64', '65+', 'NOT STATED'];
+      const ageOrder = ['18-24', '25-34', '35-44', '45-54', '55-64', '65+', 'NOT STATED'];
       const ageStats: Record<string, number> = {};
       ageOrder.forEach(key => {
           if (ageStatsUnsorted[key]) {
@@ -281,7 +281,7 @@ export class PdfService {
         return acc;
     }, {} as Record<string, number>);
 
-    const ageOrder = ['18-27', '27-35', '35-50', '50-64', '65+', 'NOT STATED'];
+    const ageOrder = ['18-24', '25-34', '35-44', '45-54', '55-64', '65+', 'NOT STATED'];
     const ageStats: Record<string, number> = {};
     ageOrder.forEach(key => {
         if (ageStatsUnsorted[key]) {

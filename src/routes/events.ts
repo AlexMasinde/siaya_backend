@@ -12,6 +12,8 @@ import { PdfService } from '../services/PdfService';
 import { formatEventResponse } from '../utils/eventResponse';
 import { applyEventScope } from '../utils/eventScope';
 import { JurisdictionService } from '../services/JurisdictionService';
+import { aggregateDemographics } from '../utils/demographics';
+import { buildMomentumAnalytics } from '../utils/momentumAnalytics';
 
 const router = Router();
 
@@ -411,7 +413,11 @@ router.get(
         }
       }
 
-      const registeredVotersInScope = await JurisdictionService.getRegisteredVotersInScope(event);
+      const drillDown = JurisdictionService.parseDrillDownFilter(
+        req.query as Record<string, unknown>
+      );
+
+      let registeredVotersInScope = await JurisdictionService.getRegisteredVotersInScope(event);
 
       // 1. Total Check-ins
       const totalCheckIns = await checkInLogRepository.count({ where: { eventId } });
@@ -482,33 +488,7 @@ router.get(
         .andWhere('(participant.isRegisteredVoter = :isRegisteredVoterFalse OR participant.isRegisteredVoter IS NULL)', { isRegisteredVoterFalse: false })
         .getCount();
 
-      // 4. Breakdowns (Aggregations)
-      const getBreakdown = async (field: string) => {
-        const stats = await participantRepository
-          .createQueryBuilder('p')
-          .innerJoin('p.checkInLogs', 'l') // Inner join ensures only participants with check-in logs are counted
-          .select(`p.${field}`, 'name')
-          .addSelect('COUNT(DISTINCT p.id)', 'count') // Count unique participants
-          .where('p.eventId = :eventId', { eventId })
-          .andWhere('l.eventId = :eventId', { eventId }) // Ensure validation against check-in event ID too
-          .groupBy(`p.${field}`)
-          .orderBy('count', 'DESC')
-          .getRawMany();
-        
-        return stats.map(s => ({ 
-          name: (s.name === null || s.name === '' || s.name === undefined) ? 'NOT STATED' : s.name, 
-          count: parseInt(s.count) || 0 
-        }));
-      };
-
-      const [byCounty, byConstituency, byWard] = await Promise.all([
-        getBreakdown('county'),
-        getBreakdown('constituency'),
-        getBreakdown('ward'),
-      ]);
-
-      // Polling center breakdown with registered voter counts
-      const pollingCenterRaw = await participantRepository
+      const pollingCenterCollectionRaw = await participantRepository
         .createQueryBuilder('p')
         .innerJoin('p.checkInLogs', 'l')
         .select('p.pollingCenter', 'name')
@@ -522,54 +502,148 @@ router.get(
         .groupBy('p.pollingCenter')
         .addGroupBy('p.ward')
         .addGroupBy('p.constituency')
-        .orderBy('count', 'DESC')
         .getRawMany();
 
-      const registeredMap = await JurisdictionService.getRegisteredVotersMap(
-        pollingCenterRaw.map((row) => ({
-          name: row.name,
-          ward: row.ward || '',
-          constituency: row.constituency || '',
-        }))
+      const collectionByCenter = new Map<string, number>();
+      for (const row of pollingCenterCollectionRaw) {
+        const key = JurisdictionService.compositeKey(
+          row.name || '',
+          row.ward || '',
+          row.constituency || ''
+        );
+        collectionByCenter.set(key, parseInt(row.count, 10) || 0);
+      }
+
+      const wardCollectionRaw = await participantRepository
+        .createQueryBuilder('p')
+        .innerJoin('p.checkInLogs', 'l')
+        .select('p.ward', 'name')
+        .addSelect('COUNT(DISTINCT p.id)', 'count')
+        .where('p.eventId = :eventId', { eventId })
+        .andWhere('l.eventId = :eventId', { eventId })
+        .andWhere('p.ward IS NOT NULL')
+        .andWhere("p.ward != ''")
+        .groupBy('p.ward')
+        .getRawMany();
+
+      const constituencyCollectionRaw = await participantRepository
+        .createQueryBuilder('p')
+        .innerJoin('p.checkInLogs', 'l')
+        .select('p.constituency', 'name')
+        .addSelect('COUNT(DISTINCT p.id)', 'count')
+        .where('p.eventId = :eventId', { eventId })
+        .andWhere('l.eventId = :eventId', { eventId })
+        .andWhere('p.constituency IS NOT NULL')
+        .andWhere("p.constituency != ''")
+        .groupBy('p.constituency')
+        .getRawMany();
+
+      const countyCollectionRaw = await participantRepository
+        .createQueryBuilder('p')
+        .innerJoin('p.checkInLogs', 'l')
+        .select('p.county', 'name')
+        .addSelect('COUNT(DISTINCT p.id)', 'count')
+        .where('p.eventId = :eventId', { eventId })
+        .andWhere('l.eventId = :eventId', { eventId })
+        .andWhere('p.county IS NOT NULL')
+        .andWhere("p.county != ''")
+        .groupBy('p.county')
+        .getRawMany();
+
+      const toAreaMap = (rows: { name: string; count: string }[]) => {
+        const map = new Map<string, number>();
+        for (const row of rows) {
+          if (row.name) {
+            map.set(row.name.toUpperCase().trim(), parseInt(row.count, 10) || 0);
+          }
+        }
+        return map;
+      };
+
+      const collectionByWard = toAreaMap(wardCollectionRaw);
+      const collectionByConstituency = toAreaMap(constituencyCollectionRaw);
+      const collectionByCounty = toAreaMap(countyCollectionRaw);
+
+      const centersInScope = await JurisdictionService.getPollingCentersInEventScope(event);
+      const activeCenters = JurisdictionService.filterCentersByDrillDown(
+        centersInScope,
+        drillDown
       );
 
-      const byPollingCenter = pollingCenterRaw.map((row) => {
-        const name = row.name || 'NOT STATED';
-        const ward = row.ward || '';
-        const constituency = row.constituency || '';
-        const count = parseInt(row.count, 10) || 0;
-        const compositeKey = `${name}|${ward}|${constituency}`.toUpperCase();
-        const registeredVoters = registeredMap.get(compositeKey) ?? null;
-        const displayName = ward ? `${name} (${ward})` : name;
+      if (JurisdictionService.hasDrillDownFilter(drillDown) && activeCenters.length > 0) {
+        registeredVotersInScope = JurisdictionService.getRegisteredVotersFromCenters(activeCenters);
+      }
 
-        return {
-          name: displayName,
-          pollingCenter: name,
-          ward,
-          constituency,
-          count,
-          registered_voters: registeredVoters,
-          ratio: registeredVoters ? `${count} / ${registeredVoters}` : `${count}`,
-          coverage_percent: registeredVoters
-            ? parseFloat(((count / registeredVoters) * 100).toFixed(1))
-            : null,
-        };
-      });
+      const scopeLabel = JurisdictionService.hasDrillDownFilter(drillDown)
+        ? JurisdictionService.drillDownFilterLabel(drillDown)
+        : JurisdictionService.getScopeLabel(event);
 
-      const missingPhones = await participantRepository
+      const missingPhonesQb = participantRepository
         .createQueryBuilder('p')
         .innerJoin('p.checkInLogs', 'l')
         .where('p.eventId = :eventId', { eventId })
         .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere("(p.phoneNumber IS NULL OR p.phoneNumber = '')")
-        .getCount();
+        .andWhere("(p.phoneNumber IS NULL OR p.phoneNumber = '')");
+      JurisdictionService.applyDrillDownToParticipantQuery(missingPhonesQb, drillDown);
+      const missingPhones = await missingPhonesQb.getCount();
 
-      const uniqueCheckedIn = await participantRepository
+      const uniqueCheckedInQb = participantRepository
         .createQueryBuilder('p')
         .innerJoin('p.checkInLogs', 'l')
         .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .getCount();
+        .andWhere('l.eventId = :eventId', { eventId });
+      JurisdictionService.applyDrillDownToParticipantQuery(uniqueCheckedInQb, drillDown);
+      const uniqueCheckedIn = await uniqueCheckedInQb.getCount();
+
+      const mobilizedParticipantsQb = participantRepository
+        .createQueryBuilder('p')
+        .innerJoin('p.checkInLogs', 'l')
+        .select(['p.id', 'p.sex', 'p.dateOfBirth'])
+        .where('p.eventId = :eventId', { eventId })
+        .andWhere('l.eventId = :eventId', { eventId });
+      JurisdictionService.applyDrillDownToParticipantQuery(mobilizedParticipantsQb, drillDown);
+      const mobilizedParticipants = await mobilizedParticipantsQb.getMany();
+
+      const demographics = aggregateDemographics(mobilizedParticipants);
+
+      const childLevel = JurisdictionService.getAnalysisLevelForDrillDown(
+        drillDown,
+        event.scopeType
+      );
+      let jurisdictionRankings: Array<Record<string, unknown>> = [];
+      let priorityPush: Array<Record<string, unknown>> = [];
+
+      if (activeCenters.length > 0 && childLevel) {
+        if (childLevel.field) {
+          jurisdictionRankings = JurisdictionService.buildRankedAreaBreakdown(
+            activeCenters,
+            childLevel.field,
+            childLevel.level === 'constituency'
+              ? collectionByConstituency
+              : childLevel.level === 'ward'
+                ? collectionByWard
+                : collectionByCounty
+          );
+        } else {
+          jurisdictionRankings = JurisdictionService.buildRankedPollingCenterBreakdown(
+            activeCenters,
+            collectionByCenter
+          );
+        }
+
+        priorityPush = jurisdictionRankings
+          .filter(
+            (r) =>
+              r.status === 'not_started' ||
+              r.status === 'critical' ||
+              r.status === 'low'
+          )
+          .slice(0, 20);
+      }
+
+      const coveragePercent = registeredVotersInScope
+        ? parseFloat(((uniqueCheckedIn / registeredVotersInScope) * 100).toFixed(1))
+        : null;
 
       res.json({
         total_check_ins: totalCheckIns,
@@ -579,9 +653,8 @@ router.get(
         collection_progress: registeredVotersInScope
           ? `${uniqueCheckedIn} / ${registeredVotersInScope}`
           : null,
-        coverage_percent: registeredVotersInScope
-          ? parseFloat(((uniqueCheckedIn / registeredVotersInScope) * 100).toFixed(1))
-          : null,
+        coverage_percent: coveragePercent,
+        scope_label: scopeLabel,
         missing_phones: missingPhones,
         invited_check_ins: invitedCheckIns,
         registered_walk_ins: registeredWalkIns,
@@ -590,12 +663,22 @@ router.get(
         invited_not_registered_check_ins: invitedNotRegisteredCheckIns,
         total_registered_check_ins: totalRegisteredCheckIns,
         total_not_registered_check_ins: totalNotRegisteredCheckIns,
-        breakdowns: {
-          county: byCounty,
-          constituency: byConstituency,
-          ward: byWard,
-          polling_center: byPollingCenter,
+        scope_type: event.scopeType ?? null,
+        drill_down: {
+          ...drillDown,
+          filter_label: JurisdictionService.drillDownFilterLabel(drillDown),
+          view_level: childLevel?.level ?? null,
         },
+        scope_defaults: JurisdictionService.drillDownDefaultsFromEvent(event),
+        demographics,
+        jurisdiction_analysis: childLevel
+          ? {
+              level: childLevel.level,
+              label: childLevel.label,
+              rankings: jurisdictionRankings,
+              priority_push: priorityPush,
+            }
+          : null,
       });
 
     } catch (error) {
@@ -608,7 +691,100 @@ router.get(
   }
 );
 
+router.get(
+  '/:eventId/momentum',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const eventRepository = AppDataSource.getRepository(Event);
+      const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
 
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers', 'pollingCenter'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      const userRole = req.user!.role as string;
+      if (userRole !== UserRole.SUPER_ADMIN && userRole !== 'super_admin') {
+        const isAssigned = event.assignedUsers.some((u) => u.id === req.user!.id);
+        if (!isAssigned) {
+          res.status(403).json({ message: 'Access denied' });
+          return;
+        }
+      }
+
+      const drillDown = JurisdictionService.parseDrillDownFilter(
+        req.query as Record<string, unknown>
+      );
+
+      let registeredVotersInScope = await JurisdictionService.getRegisteredVotersInScope(event);
+      const centersInScope = await JurisdictionService.getPollingCentersInEventScope(event);
+      const activeCenters = JurisdictionService.filterCentersByDrillDown(centersInScope, drillDown);
+
+      if (JurisdictionService.hasDrillDownFilter(drillDown) && activeCenters.length > 0) {
+        registeredVotersInScope = JurisdictionService.getRegisteredVotersFromCenters(activeCenters);
+      }
+
+      const scopeLabel = JurisdictionService.hasDrillDownFilter(drillDown)
+        ? JurisdictionService.drillDownFilterLabel(drillDown)
+        : JurisdictionService.getScopeLabel(event);
+
+      const rowsQb = checkInLogRepository
+        .createQueryBuilder('l')
+        .innerJoin('l.participant', 'p')
+        .select('l.checkedInAt', 'checkedInAt')
+        .addSelect('p.ward', 'ward')
+        .addSelect('p.constituency', 'constituency')
+        .addSelect('p.pollingCenter', 'pollingCenter')
+        .where('l.eventId = :eventId', { eventId });
+      if (drillDown.county) {
+        rowsQb.andWhere('p.county = :momCounty', { momCounty: drillDown.county });
+      }
+      if (drillDown.constituency) {
+        rowsQb.andWhere('p.constituency = :momConstituency', {
+          momConstituency: drillDown.constituency,
+        });
+      }
+      if (drillDown.ward) {
+        rowsQb.andWhere('p.ward = :momWard', { momWard: drillDown.ward });
+      }
+      if (drillDown.pollingCenter) {
+        rowsQb.andWhere('p.pollingCenter = :momPc', { momPc: drillDown.pollingCenter });
+      }
+
+      const rows = await rowsQb.getRawMany();
+
+      const momentum = buildMomentumAnalytics({
+        rows,
+        registeredVoters: registeredVotersInScope,
+        targetDate: event.date,
+        scopeLabel,
+        drillDown,
+      });
+
+      res.json({
+        ...momentum,
+        drill_down: {
+          ...drillDown,
+          filter_label: JurisdictionService.drillDownFilterLabel(drillDown),
+        },
+        scope_defaults: JurisdictionService.drillDownDefaultsFromEvent(event),
+      });
+    } catch (error) {
+      logger.error('Get event momentum error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
 
 // Get Event Analytics (For Report Preview)
 router.get(
