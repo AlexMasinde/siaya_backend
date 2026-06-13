@@ -37,7 +37,6 @@ app.use((req, res, next) => {
         env.FRONTEND_URL,
         'https://attendance-ke.vercel.app',
         'https://www.events.uda.ke',
-        'https://siaya-fe-env-staging-dau-holders.vercel.app',
         'https://siaya-3g5u2aolb-dau-holders.vercel.app',
         'https://siaya-fe-git-staging-dau-holders.vercel.app',
       ];
