@@ -38,7 +38,8 @@ app.use((req, res, next) => {
         'https://attendance-ke.vercel.app',
         'https://events.uda.ke',
         'https://www.events.uda.ke',
-        'https://preview-frontend-kzmg8koshmgm3xtu2v62.vusercontent.net'
+        'https://preview-frontend-kzmg8koshmgm3xtu2v62.vusercontent.net',
+        'https://siaya-fe-env-staging-dau-holders.vercel.app/'
       ];
   
   // Check if the origin is allowed
