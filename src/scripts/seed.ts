@@ -17,6 +17,7 @@ async function seed() {
       logger.info('Users already exist. Skipping seed.');
       await AppDataSource.destroy();
       process.exit(0);
+
     }
 
     logger.info('No users found. Creating initial super admin...');
