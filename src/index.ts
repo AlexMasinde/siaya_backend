@@ -39,7 +39,8 @@ app.use((req, res, next) => {
         'https://www.events.uda.ke',
         'https://siaya-fe-env-staging-dau-holders.vercel.app',
         'https://siaya-3g5u2aolb-dau-holders.vercel.app',
-        'https://siaya-fe-git-staging-dau-holders.vercel.app'
+        'https://siaya-fe-git-staging-dau-holders.vercel.app',
+        'https://siaya-fe-git-staging-dau-holders.vercel.app/'
       ];
   
   // Check if the origin is allowed
