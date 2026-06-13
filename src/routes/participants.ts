@@ -8,6 +8,7 @@ import { authenticate } from '../middleware/auth';
 import { lookupVoter } from '../services/voterLookup';
 import logger from '../config/logger';
 import { v4 as uuidv4 } from 'uuid';
+import { resolveKenyanMobileForCheckIn } from '../utils/kenyanPhone';
 
 const router = Router();
 
@@ -168,6 +169,18 @@ router.post(
         },
       });
 
+      const phoneResult = resolveKenyanMobileForCheckIn(
+        phoneNumber,
+        participant?.phoneNumber
+      );
+
+      if (!phoneResult.ok) {
+        res.status(400).json({ message: phoneResult.error });
+        return;
+      }
+
+      const normalizedPhone = phoneResult.local;
+
       if (!participant) {
         // If not found locally, we expect full details for creation (from fallback)
          if (!name || !dateOfBirth || !sex) {
@@ -189,16 +202,15 @@ router.post(
           constituency: constituency || null,
           ward: ward || null,
           pollingCenter: pollingCenter || null,
-          phoneNumber: phoneNumber || null,
+          phoneNumber: normalizedPhone,
           isRegisteredVoter: isRegisteredVoter !== undefined ? isRegisteredVoter : false,
           isInvited: isInvited !== undefined ? isInvited : false,
         });
         await participantRepository.save(participant);
       } else {
          // Update existing participant
-         // If phone number is provided and different, update it
-         if (phoneNumber && phoneNumber.trim() !== '' && participant.phoneNumber !== phoneNumber) {
-            participant.phoneNumber = phoneNumber;
+         if (participant.phoneNumber !== normalizedPhone) {
+            participant.phoneNumber = normalizedPhone;
          }
          
          // Update isRegisteredVoter if provided

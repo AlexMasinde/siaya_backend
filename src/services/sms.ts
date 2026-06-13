@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { env } from '../config/env';
 import logger from '../config/logger';
+import { parseKenyanMobile } from '../utils/kenyanPhone';
 
 class SmsService {
   private username: string;
@@ -14,31 +15,11 @@ class SmsService {
   }
 
   normalizePhoneNumber(phoneNumber: string): string | { error: string } {
-    let formattedMobileNumber = String(phoneNumber).trim().replace(/^\+/, '');
-
-    if (/^\d+(\.\d+)?e[+-]?\d+$/i.test(formattedMobileNumber)) {
-      formattedMobileNumber = String(Math.round(Number(formattedMobileNumber)));
-    } else if (formattedMobileNumber.includes('.') && !formattedMobileNumber.includes('e')) {
-      formattedMobileNumber = formattedMobileNumber.split('.')[0];
+    const parsed = parseKenyanMobile(phoneNumber);
+    if (!parsed.ok) {
+      return { error: parsed.error };
     }
-
-    formattedMobileNumber = formattedMobileNumber.replace(/\s+/g, '');
-
-    if (/^[17]\d{8}$/.test(formattedMobileNumber)) {
-      formattedMobileNumber = `0${formattedMobileNumber}`;
-    }
-
-    if (!formattedMobileNumber.startsWith('254')) {
-      formattedMobileNumber = '254' + formattedMobileNumber.replace(/^0+/, '');
-    }
-
-    const valid = /^254[71]\d{8}$/.test(formattedMobileNumber);
-
-    if (!valid) {
-      return { error: 'Invalid phone number' };
-    }
-
-    return formattedMobileNumber;
+    return parsed.international;
   }
 
   private sanitizePhoneNumber(phoneNumber: string): string | { error: string } {
