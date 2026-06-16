@@ -14,6 +14,7 @@ import { applyEventScope } from '../utils/eventScope';
 import { JurisdictionService } from '../services/JurisdictionService';
 import { aggregateDemographics } from '../utils/demographics';
 import { buildMomentumAnalytics } from '../utils/momentumAnalytics';
+import { buildFieldImpact } from '../utils/fieldImpact';
 
 const router = Router();
 
@@ -683,6 +684,49 @@ router.get(
 
     } catch (error) {
        logger.error('Get event statistics error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/:eventId/my-impact',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const eventRepository = AppDataSource.getRepository(Event);
+
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers', 'pollingCenter'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      const userRole = req.user!.role as string;
+      if (userRole !== UserRole.SUPER_ADMIN && userRole !== 'super_admin') {
+        const isAssigned = event.assignedUsers.some((u) => u.id === req.user!.id);
+        if (!isAssigned) {
+          res.status(403).json({ message: 'Access denied' });
+          return;
+        }
+      }
+
+      const impact = await buildFieldImpact(event, req.user!.id);
+
+      res.json({
+        message: 'Field impact retrieved successfully',
+        ...impact,
+      });
+    } catch (error) {
+      logger.error('Get field impact error:', {
         error: error instanceof Error ? error.message : String(error),
         stack: error instanceof Error ? error.stack : undefined,
       });
