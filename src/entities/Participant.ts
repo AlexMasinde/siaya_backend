@@ -1,6 +1,5 @@
 import {
   Entity,
-  PrimaryGeneratedColumn,
   PrimaryColumn,
   Column,
   CreateDateColumn,
@@ -8,12 +7,17 @@ import {
   ManyToOne,
   OneToMany,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { User } from './User';
 import { Event } from './Event';
 import { CheckInLog } from './CheckInLog';
 
 @Entity('participants')
+@Index('idx_participants_event', ['eventId'])
+@Index('idx_participants_event_ward', ['eventId', 'ward'])
+@Index('idx_participants_event_polling_center', ['eventId', 'pollingCenter'])
+@Index('idx_participants_event_constituency', ['eventId', 'constituency'])
 export class Participant {
   @PrimaryColumn({ type: 'varchar', length: 255 })
   id: string;

@@ -13,6 +13,9 @@ import { Event } from './Event';
 
 @Entity('check_in_logs')
 @Index(['participantId', 'eventId', 'checkInDate'], { unique: true })
+@Index('idx_check_in_logs_event_checked_at', ['eventId', 'checkedInAt'])
+@Index('idx_check_in_logs_event_date', ['eventId', 'checkInDate'])
+@Index('idx_check_in_logs_event_agent', ['eventId', 'checkedInById'])
 export class CheckInLog {
   @PrimaryGeneratedColumn('uuid')
   id: string;

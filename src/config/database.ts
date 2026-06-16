@@ -4,6 +4,9 @@ import { Event } from '../entities/Event';
 import { Participant } from '../entities/Participant';
 import { CheckInLog } from '../entities/CheckInLog';
 import { PollingCenter } from '../entities/PollingCenter';
+import { EventJurisdictionStat } from '../entities/EventJurisdictionStat';
+import { EventDailyStat } from '../entities/EventDailyStat';
+import { EventAgentStat } from '../entities/EventAgentStat';
 
 import { env } from './env';
 import logger from './logger';
@@ -30,7 +33,16 @@ const dbConfig = {
   database: env.DB_DATABASE,
   synchronize: env.NODE_ENV !== 'production',
   logging: env.NODE_ENV === 'development',
-  entities: [User, Event, Participant, CheckInLog, PollingCenter],
+  entities: [
+    User,
+    Event,
+    Participant,
+    CheckInLog,
+    PollingCenter,
+    EventJurisdictionStat,
+    EventDailyStat,
+    EventAgentStat,
+  ],
   migrations: ['src/migrations/**/*.ts'],
   subscribers: ['src/subscribers/**/*.ts'],
   ssl,
