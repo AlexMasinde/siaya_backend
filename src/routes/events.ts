@@ -692,6 +692,102 @@ router.get(
   }
 );
 
+async function assertEventAccessForFieldUser(
+  event: Event,
+  user: { id: string; role: string }
+): Promise<boolean> {
+  const userRole = user.role as string;
+  if (userRole === UserRole.SUPER_ADMIN || userRole === 'super_admin') {
+    return true;
+  }
+  return event.assignedUsers.some((u) => u.id === user.id);
+}
+
+router.get(
+  '/:eventId/my-checkins',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+      const skip = (page - 1) * limit;
+
+      const eventRepository = AppDataSource.getRepository(Event);
+      const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
+
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const total = await checkInLogRepository
+        .createQueryBuilder('log')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('log.checkedInById = :userId', { userId: req.user!.id })
+        .getCount();
+
+      const checkIns = await checkInLogRepository
+        .createQueryBuilder('log')
+        .innerJoinAndSelect('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('log.checkedInById = :userId', { userId: req.user!.id })
+        .orderBy('log.checkedInAt', 'DESC')
+        .skip(skip)
+        .take(limit)
+        .getMany();
+
+      const totalPages = Math.ceil(total / limit);
+
+      res.json({
+        message: 'Your check-ins retrieved successfully',
+        checkIns: checkIns.map((log) => ({
+          id: log.id,
+          checkInDate: log.checkInDate,
+          checkedInAt: log.checkedInAt,
+          participant: {
+            id: log.participant.id,
+            idNumber: log.participant.idNumber,
+            name: log.participant.name,
+            sex: log.participant.sex,
+            phoneNumber: log.participant.phoneNumber,
+            county: log.participant.county,
+            constituency: log.participant.constituency,
+            ward: log.participant.ward,
+            pollingCenter: log.participant.pollingCenter,
+            isRegisteredVoter: log.participant.isRegisteredVoter,
+            isInvited: log.participant.isInvited,
+          },
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
+      });
+    } catch (error) {
+      logger.error('Get my check-ins error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
 router.get(
   '/:eventId/my-impact',
   authenticate,
@@ -710,13 +806,9 @@ router.get(
         return;
       }
 
-      const userRole = req.user!.role as string;
-      if (userRole !== UserRole.SUPER_ADMIN && userRole !== 'super_admin') {
-        const isAssigned = event.assignedUsers.some((u) => u.id === req.user!.id);
-        if (!isAssigned) {
-          res.status(403).json({ message: 'Access denied' });
-          return;
-        }
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
       }
 
       const impact = await buildFieldImpact(event, req.user!.id);
