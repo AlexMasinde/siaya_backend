@@ -15,6 +15,11 @@ import { JurisdictionService } from '../services/JurisdictionService';
 import { aggregateDemographics } from '../utils/demographics';
 import { buildMomentumAnalytics } from '../utils/momentumAnalytics';
 import { buildFieldImpact } from '../utils/fieldImpact';
+import {
+  applyMyCheckInsFilters,
+  applyMyCheckInsSort,
+  parseMyCheckInsQuery,
+} from '../utils/myCheckInsQuery';
 
 const router = Router();
 
@@ -692,6 +697,190 @@ router.get(
   }
 );
 
+async function assertEventAccessForFieldUser(
+  event: Event,
+  user: { id: string; role: string }
+): Promise<boolean> {
+  const userRole = user.role as string;
+  if (userRole === UserRole.SUPER_ADMIN || userRole === 'super_admin') {
+    return true;
+  }
+  return event.assignedUsers.some((u) => u.id === user.id);
+}
+
+router.get(
+  '/:eventId/my-checkins/filter-options',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const eventRepository = AppDataSource.getRepository(Event);
+      const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
+
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const rows = await checkInLogRepository
+        .createQueryBuilder('log')
+        .innerJoin('log.participant', 'participant')
+        .select('participant.county', 'county')
+        .addSelect('participant.constituency', 'constituency')
+        .addSelect('participant.ward', 'ward')
+        .addSelect('participant.pollingCenter', 'pollingCenter')
+        .where('log.eventId = :eventId', { eventId })
+        .andWhere('log.checkedInById = :userId', { userId: req.user!.id })
+        .distinct(true)
+        .getRawMany<{
+          county: string | null;
+          constituency: string | null;
+          ward: string | null;
+          pollingCenter: string | null;
+        }>();
+
+      const sortUnique = (values: (string | null | undefined)[]) =>
+        [...new Set(values.filter((v): v is string => !!v && v.trim() !== ''))].sort((a, b) =>
+          a.localeCompare(b)
+        );
+
+      const pollingCentersByWard: Record<string, string[]> = {};
+      for (const row of rows) {
+        const ward = row.ward?.trim();
+        const pc = row.pollingCenter?.trim();
+        if (!ward || !pc) continue;
+        if (!pollingCentersByWard[ward]) pollingCentersByWard[ward] = [];
+        if (!pollingCentersByWard[ward].includes(pc)) {
+          pollingCentersByWard[ward].push(pc);
+        }
+      }
+      for (const ward of Object.keys(pollingCentersByWard)) {
+        pollingCentersByWard[ward].sort((a, b) => a.localeCompare(b));
+      }
+
+      res.json({
+        message: 'Filter options retrieved successfully',
+        wards: sortUnique(rows.map((r) => r.ward)),
+        pollingCenters: sortUnique(rows.map((r) => r.pollingCenter)),
+        pollingCentersByWard,
+      });
+    } catch (error) {
+      logger.error('Get my check-ins filter options error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+router.get(
+  '/:eventId/my-checkins',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+      const skip = (page - 1) * limit;
+
+      const eventRepository = AppDataSource.getRepository(Event);
+      const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
+
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const filters = parseMyCheckInsQuery(eventId, req.user!.id, req.query);
+
+      const countQb = checkInLogRepository.createQueryBuilder('log');
+      applyMyCheckInsFilters(countQb, filters);
+      const total = await countQb.getCount();
+
+      const dataQb = checkInLogRepository
+        .createQueryBuilder('log')
+        .innerJoinAndSelect('log.participant', 'participant');
+      applyMyCheckInsFilters(dataQb, filters, { participantJoined: true });
+      applyMyCheckInsSort(dataQb, filters.sort);
+
+      const checkIns = await dataQb.skip(skip).take(limit).getMany();
+
+      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+      res.json({
+        message: 'Your check-ins retrieved successfully',
+        checkIns: checkIns.map((log) => ({
+          id: log.id,
+          checkInDate: log.checkInDate,
+          checkedInAt: log.checkedInAt,
+          participant: {
+            id: log.participant.id,
+            idNumber: log.participant.idNumber,
+            name: log.participant.name,
+            sex: log.participant.sex,
+            phoneNumber: log.participant.phoneNumber,
+            county: log.participant.county,
+            constituency: log.participant.constituency,
+            ward: log.participant.ward,
+            pollingCenter: log.participant.pollingCenter,
+            isRegisteredVoter: log.participant.isRegisteredVoter,
+            isInvited: log.participant.isInvited,
+          },
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
+        filters: {
+          search: filters.search ?? null,
+          county: filters.county ?? null,
+          constituency: filters.constituency ?? null,
+          ward: filters.ward ?? null,
+          pollingCenter: filters.pollingCenter ?? null,
+          dateFrom: filters.dateFrom ?? null,
+          dateTo: filters.dateTo ?? null,
+          today: filters.today ?? false,
+          isRegisteredVoter: filters.isRegisteredVoter ?? null,
+          isInvited: filters.isInvited ?? null,
+          sex: filters.sex ?? null,
+          sort: filters.sort ?? 'checkedInAt_desc',
+        },
+      });
+    } catch (error) {
+      logger.error('Get my check-ins error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
 router.get(
   '/:eventId/my-impact',
   authenticate,
@@ -710,13 +899,9 @@ router.get(
         return;
       }
 
-      const userRole = req.user!.role as string;
-      if (userRole !== UserRole.SUPER_ADMIN && userRole !== 'super_admin') {
-        const isAssigned = event.assignedUsers.some((u) => u.id === req.user!.id);
-        if (!isAssigned) {
-          res.status(403).json({ message: 'Access denied' });
-          return;
-        }
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
       }
 
       const impact = await buildFieldImpact(event, req.user!.id);

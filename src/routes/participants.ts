@@ -9,6 +9,7 @@ import { lookupVoter } from '../services/voterLookup';
 import logger from '../config/logger';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveKenyanMobileForCheckIn } from '../utils/kenyanPhone';
+import { incrementAnalyticsOnCheckIn } from '../services/AnalyticsIncrementService';
 
 const router = Router();
 
@@ -248,7 +249,7 @@ router.post(
         return;
       }
 
-      // Create check-in log
+      // Create check-in log and increment analytics in one transaction
       const checkInLog = checkInLogRepository.create({
         participantId: participant.id,
         eventId,
@@ -257,7 +258,16 @@ router.post(
         checkedInAt: new Date(),
       });
 
-      await checkInLogRepository.save(checkInLog);
+      await AppDataSource.transaction(async (manager) => {
+        await manager.save(CheckInLog, checkInLog);
+        await incrementAnalyticsOnCheckIn(manager, {
+          eventId,
+          participant,
+          checkInDate: today,
+          checkedInAt: checkInLog.checkedInAt,
+          checkedInById: checkInLog.checkedInById,
+        });
+      });
 
       res.status(201).json({
         message: 'Participant checked in successfully',
