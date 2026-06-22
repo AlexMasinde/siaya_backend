@@ -5,6 +5,7 @@ import { User, UserRole } from '../entities/User';
 import { CheckInLog } from '../entities/CheckInLog';
 
 import { Participant } from '../entities/Participant';
+import { EventAgentStat } from '../entities/EventAgentStat';
 import { In } from 'typeorm';
 import { authenticate, AuthRequest, requireAdmin, requireSuperAdmin } from '../middleware/auth';
 import logger from '../config/logger';
@@ -966,7 +967,93 @@ router.get(
   }
 );
 
-// Get All Check-ins for an Event
+// Get field agent mobilization leaderboard (from summary tables)
+router.get(
+  '/:eventId/field-agents',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+      const skip = (page - 1) * limit;
+      const search =
+        typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const agentStatRepository = AppDataSource.getRepository(EventAgentStat);
+      const baseQb = agentStatRepository
+        .createQueryBuilder('s')
+        .innerJoin(User, 'u', 'u.id = s.userId')
+        .where('s.eventId = :eventId', { eventId });
+
+      if (search) {
+        baseQb.andWhere('u.name LIKE :search', { search: `%${search}%` });
+      }
+
+      const countResult = await baseQb
+        .clone()
+        .select('COUNT(DISTINCT s.userId)', 'total')
+        .getRawOne<{ total: string }>();
+      const total = Number(countResult?.total ?? 0);
+      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+      const rows = await baseQb
+        .select('s.userId', 'userId')
+        .addSelect('u.name', 'name')
+        .addSelect('SUM(s.uniqueMobilized)', 'mobilized')
+        .addSelect('SUM(s.checkInCount)', 'checkIns')
+        .groupBy('s.userId')
+        .addGroupBy('u.name')
+        .orderBy('mobilized', 'DESC')
+        .addOrderBy('u.name', 'ASC')
+        .offset(skip)
+        .limit(limit)
+        .getRawMany<{ userId: string; name: string; mobilized: string; checkIns: string }>();
+
+      res.json({
+        message: 'Field agents retrieved successfully',
+        agents: rows.map((row) => ({
+          userId: row.userId,
+          name: row.name,
+          mobilized: Number(row.mobilized) || 0,
+          checkIns: Number(row.checkIns) || 0,
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
+      });
+    } catch (error) {
+      logger.error('Get field agents error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+// Get check-ins for an Event (paginated)
 router.get(
   '/:eventId/checkins',
   authenticate,
@@ -974,36 +1061,61 @@ router.get(
     try {
       const { eventId } = req.params;
       const { county, constituency, ward, pollingCenter } = req.query;
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
+      const skip = (page - 1) * limit;
       const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
 
       const eventRepository = AppDataSource.getRepository(Event);
-      const event = await eventRepository.findOne({ where: { eventId } });
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
       if (!event) {
         res.status(404).json({ message: 'Event not found' });
         return;
       }
 
-      let query = checkInLogRepository
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const applyJurisdictionFilters = (
+        qb: ReturnType<typeof checkInLogRepository.createQueryBuilder>
+      ) => {
+        if (county && typeof county === 'string') {
+          qb.andWhere('participant.county = :county', { county });
+        }
+        if (constituency && typeof constituency === 'string') {
+          qb.andWhere('participant.constituency = :constituency', { constituency });
+        }
+        if (ward && typeof ward === 'string') {
+          qb.andWhere('participant.ward = :ward', { ward });
+        }
+        if (pollingCenter && typeof pollingCenter === 'string') {
+          qb.andWhere('participant.pollingCenter = :pollingCenter', { pollingCenter });
+        }
+        return qb;
+      };
+
+      const countQb = checkInLogRepository
+        .createQueryBuilder('log')
+        .innerJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId });
+      applyJurisdictionFilters(countQb);
+      const total = await countQb.getCount();
+      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+      let dataQb = checkInLogRepository
         .createQueryBuilder('log')
         .leftJoinAndSelect('log.participant', 'participant')
         .leftJoinAndSelect('log.checkedInBy', 'checkedInBy')
         .where('log.eventId = :eventId', { eventId })
         .orderBy('log.checkedInAt', 'DESC');
+      applyJurisdictionFilters(dataQb);
 
-      if (county && typeof county === 'string') {
-        query = query.andWhere('participant.county = :county', { county });
-      }
-      if (constituency && typeof constituency === 'string') {
-        query = query.andWhere('participant.constituency = :constituency', { constituency });
-      }
-      if (ward && typeof ward === 'string') {
-        query = query.andWhere('participant.ward = :ward', { ward });
-      }
-      if (pollingCenter && typeof pollingCenter === 'string') {
-        query = query.andWhere('participant.pollingCenter = :pollingCenter', { pollingCenter });
-      }
-
-      const checkIns = await query.getMany();
+      const checkIns = await dataQb.skip(skip).take(limit).getMany();
 
       res.json({
         message: 'Check-ins retrieved successfully',
@@ -1029,7 +1141,15 @@ router.get(
             name: log.checkedInBy.name,
             email: log.checkedInBy.email
           } : null
-        }))
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
       });
 
     } catch (error) {
