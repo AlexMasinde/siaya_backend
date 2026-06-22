@@ -3,6 +3,7 @@ import { CheckInLog } from '../entities/CheckInLog';
 import { Event } from '../entities/Event';
 import { PollingCenter } from '../entities/PollingCenter';
 import { JurisdictionService } from '../services/JurisdictionService';
+import { AnalyticsReadService } from '../services/AnalyticsReadService';
 import {
   computeCampaignPace,
   DEFAULT_TARGET_COVERAGE_PERCENT,
@@ -72,7 +73,6 @@ export async function buildFieldImpact(
   event: Event,
   userId: string
 ): Promise<FieldImpactSummary> {
-  const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
   const eventId = event.eventId;
   const today = startOfToday();
   const targetCoverage = DEFAULT_TARGET_COVERAGE_PERCENT;
@@ -83,54 +83,18 @@ export async function buildFieldImpact(
     pcMap.set(JurisdictionService.compositeKey(pc.name, pc.wardName, pc.constituencyName), pc);
   }
 
-  const myByCenterRaw = await checkInLogRepository
-    .createQueryBuilder('l')
-    .innerJoin('l.participant', 'p')
-    .select('p.pollingCenter', 'pollingCenter')
-    .addSelect('p.ward', 'ward')
-    .addSelect('p.constituency', 'constituency')
-    .addSelect('COUNT(DISTINCT p.id)', 'count')
-    .where('l.eventId = :eventId', { eventId })
-    .andWhere('l.checkedInById = :userId', { userId })
-    .andWhere('p.pollingCenter IS NOT NULL')
-    .andWhere("p.pollingCenter != ''")
-    .groupBy('p.pollingCenter')
-    .addGroupBy('p.ward')
-    .addGroupBy('p.constituency')
-    .orderBy('count', 'DESC')
-    .getRawMany<{ pollingCenter: string; ward: string; constituency: string; count: string }>();
+  const [myAgentRows, campaignByKey, agentTotals] = await Promise.all([
+    AnalyticsReadService.getAgentRows(eventId, userId),
+    AnalyticsReadService.getCampaignMobilizedByCenter(eventId),
+    AnalyticsReadService.getAgentTotals(eventId, userId),
+  ]);
 
-  const campaignByCenterRaw = await checkInLogRepository
-    .createQueryBuilder('l')
-    .innerJoin('l.participant', 'p')
-    .select('p.pollingCenter', 'pollingCenter')
-    .addSelect('p.ward', 'ward')
-    .addSelect('p.constituency', 'constituency')
-    .addSelect('COUNT(DISTINCT p.id)', 'count')
-    .where('l.eventId = :eventId', { eventId })
-    .andWhere('p.pollingCenter IS NOT NULL')
-    .andWhere("p.pollingCenter != ''")
-    .groupBy('p.pollingCenter')
-    .addGroupBy('p.ward')
-    .addGroupBy('p.constituency')
-    .getRawMany<{ pollingCenter: string; ward: string; constituency: string; count: string }>();
-
-  const campaignByKey = new Map<string, number>();
-  for (const row of campaignByCenterRaw) {
-    const key = JurisdictionService.compositeKey(
-      row.pollingCenter || '',
-      row.ward || '',
-      row.constituency || ''
-    );
-    campaignByKey.set(key, parseInt(row.count, 10) || 0);
-  }
-
-  const polling_centers: FieldPollingCenterImpact[] = myByCenterRaw.map((row) => {
+  const polling_centers: FieldPollingCenterImpact[] = myAgentRows.map((row) => {
     const pollingCenter = row.pollingCenter || '';
     const ward = row.ward || '';
     const constituency = row.constituency || '';
     const key = JurisdictionService.compositeKey(pollingCenter, ward, constituency);
-    const my_mobilized = parseInt(row.count, 10) || 0;
+    const my_mobilized = row.uniqueMobilized;
     const campaign_mobilized = campaignByKey.get(key) ?? my_mobilized;
     const registered_voters = resolveRegisteredVoters(pcMap, pollingCenter, ward, constituency);
     const target_mobilized =
@@ -165,14 +129,7 @@ export async function buildFieldImpact(
     };
   });
 
-  const total_mobilized = await checkInLogRepository
-    .createQueryBuilder('l')
-    .where('l.eventId = :eventId', { eventId })
-    .andWhere('l.checkedInById = :userId', { userId })
-    .select('COUNT(DISTINCT l.participantId)', 'count')
-    .getRawOne<{ count: string }>();
-
-  const mobilized_today = await checkInLogRepository
+  const mobilizedTodayRaw = await AppDataSource.getRepository(CheckInLog)
     .createQueryBuilder('l')
     .where('l.eventId = :eventId', { eventId })
     .andWhere('l.checkedInById = :userId', { userId })
@@ -180,16 +137,12 @@ export async function buildFieldImpact(
     .select('COUNT(DISTINCT l.participantId)', 'count')
     .getRawOne<{ count: string }>();
 
-  const total_check_ins = await checkInLogRepository.count({
-    where: { eventId, checkedInById: userId },
-  });
-
+  const myTotal = agentTotals.total_mobilized;
+  const myToday = parseInt(mobilizedTodayRaw?.count ?? '0', 10) || 0;
   const registered_voters_in_influenced_centers = polling_centers.reduce(
     (sum, pc) => sum + pc.registered_voters,
     0
   );
-  const myTotal = parseInt(total_mobilized?.count ?? '0', 10) || 0;
-  const myToday = parseInt(mobilized_today?.count ?? '0', 10) || 0;
   const target_mobilized =
     registered_voters_in_influenced_centers > 0
       ? Math.ceil((registered_voters_in_influenced_centers * targetCoverage) / 100)
@@ -221,8 +174,8 @@ export async function buildFieldImpact(
     my_stats: {
       total_mobilized: myTotal,
       mobilized_today: myToday,
-      total_check_ins,
-      polling_centers_influenced: polling_centers.length,
+      total_check_ins: agentTotals.total_check_ins,
+      polling_centers_influenced: agentTotals.polling_centers_influenced,
       registered_voters_in_influenced_centers,
       target_mobilized,
       gap_to_target,

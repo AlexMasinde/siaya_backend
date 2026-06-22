@@ -5,6 +5,7 @@ import { User, UserRole } from '../entities/User';
 import { CheckInLog } from '../entities/CheckInLog';
 
 import { Participant } from '../entities/Participant';
+import { EventAgentStat } from '../entities/EventAgentStat';
 import { In } from 'typeorm';
 import { authenticate, AuthRequest, requireAdmin, requireSuperAdmin } from '../middleware/auth';
 import logger from '../config/logger';
@@ -20,6 +21,7 @@ import {
   applyMyCheckInsSort,
   parseMyCheckInsQuery,
 } from '../utils/myCheckInsQuery';
+import { AnalyticsReadService } from '../services/AnalyticsReadService';
 
 const router = Router();
 
@@ -425,14 +427,30 @@ router.get(
 
       let registeredVotersInScope = await JurisdictionService.getRegisteredVotersInScope(event);
 
-      // 1. Total Check-ins
-      const totalCheckIns = await checkInLogRepository.count({ where: { eventId } });
-      
-      // 2. Total Participants
+      const centersInScope = await JurisdictionService.getPollingCentersInEventScope(event);
+      const activeCenters = JurisdictionService.filterCentersByDrillDown(
+        centersInScope,
+        drillDown
+      );
+
+      if (JurisdictionService.hasDrillDownFilter(drillDown) && activeCenters.length > 0) {
+        registeredVotersInScope = JurisdictionService.getRegisteredVotersFromCenters(activeCenters);
+      }
+
+      const [totalCheckIns, uniqueCheckedIn, collectionMaps] = await Promise.all([
+        AnalyticsReadService.getTotalCheckIns(eventId),
+        AnalyticsReadService.getUniqueMobilizedInScope(eventId, drillDown),
+        AnalyticsReadService.getCollectionMaps(eventId, drillDown),
+      ]);
+
+      const collectionByCenter = collectionMaps.byCenter;
+      const collectionByWard = collectionMaps.byWard;
+      const collectionByConstituency = collectionMaps.byConstituency;
+      const collectionByCounty = collectionMaps.byCounty;
+
       const totalParticipants = await participantRepository.count({ where: { eventId } });
 
-      // 3. New Categories Breakdown (Using QueryBuilder for robust NULL handling)
-      
+      // Category breakdowns still require live joins (not stored in summary tables).
       // Invited: isInvited = true
       const invitedCheckIns = await checkInLogRepository
         .createQueryBuilder('log')
@@ -494,92 +512,6 @@ router.get(
         .andWhere('(participant.isRegisteredVoter = :isRegisteredVoterFalse OR participant.isRegisteredVoter IS NULL)', { isRegisteredVoterFalse: false })
         .getCount();
 
-      const pollingCenterCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.pollingCenter', 'name')
-        .addSelect('p.ward', 'ward')
-        .addSelect('p.constituency', 'constituency')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.pollingCenter IS NOT NULL')
-        .andWhere("p.pollingCenter != ''")
-        .groupBy('p.pollingCenter')
-        .addGroupBy('p.ward')
-        .addGroupBy('p.constituency')
-        .getRawMany();
-
-      const collectionByCenter = new Map<string, number>();
-      for (const row of pollingCenterCollectionRaw) {
-        const key = JurisdictionService.compositeKey(
-          row.name || '',
-          row.ward || '',
-          row.constituency || ''
-        );
-        collectionByCenter.set(key, parseInt(row.count, 10) || 0);
-      }
-
-      const wardCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.ward', 'name')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.ward IS NOT NULL')
-        .andWhere("p.ward != ''")
-        .groupBy('p.ward')
-        .getRawMany();
-
-      const constituencyCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.constituency', 'name')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.constituency IS NOT NULL')
-        .andWhere("p.constituency != ''")
-        .groupBy('p.constituency')
-        .getRawMany();
-
-      const countyCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.county', 'name')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.county IS NOT NULL')
-        .andWhere("p.county != ''")
-        .groupBy('p.county')
-        .getRawMany();
-
-      const toAreaMap = (rows: { name: string; count: string }[]) => {
-        const map = new Map<string, number>();
-        for (const row of rows) {
-          if (row.name) {
-            map.set(row.name.toUpperCase().trim(), parseInt(row.count, 10) || 0);
-          }
-        }
-        return map;
-      };
-
-      const collectionByWard = toAreaMap(wardCollectionRaw);
-      const collectionByConstituency = toAreaMap(constituencyCollectionRaw);
-      const collectionByCounty = toAreaMap(countyCollectionRaw);
-
-      const centersInScope = await JurisdictionService.getPollingCentersInEventScope(event);
-      const activeCenters = JurisdictionService.filterCentersByDrillDown(
-        centersInScope,
-        drillDown
-      );
-
-      if (JurisdictionService.hasDrillDownFilter(drillDown) && activeCenters.length > 0) {
-        registeredVotersInScope = JurisdictionService.getRegisteredVotersFromCenters(activeCenters);
-      }
-
       const scopeLabel = JurisdictionService.hasDrillDownFilter(drillDown)
         ? JurisdictionService.drillDownFilterLabel(drillDown)
         : JurisdictionService.getScopeLabel(event);
@@ -592,14 +524,6 @@ router.get(
         .andWhere("(p.phoneNumber IS NULL OR p.phoneNumber = '')");
       JurisdictionService.applyDrillDownToParticipantQuery(missingPhonesQb, drillDown);
       const missingPhones = await missingPhonesQb.getCount();
-
-      const uniqueCheckedInQb = participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId });
-      JurisdictionService.applyDrillDownToParticipantQuery(uniqueCheckedInQb, drillDown);
-      const uniqueCheckedIn = await uniqueCheckedInQb.getCount();
 
       const mobilizedParticipantsQb = participantRepository
         .createQueryBuilder('p')
@@ -964,6 +888,8 @@ router.get(
         ? JurisdictionService.drillDownFilterLabel(drillDown)
         : JurisdictionService.getScopeLabel(event);
 
+      const hasDrillDown = JurisdictionService.hasDrillDownFilter(drillDown);
+
       const rowsQb = checkInLogRepository
         .createQueryBuilder('l')
         .innerJoin('l.participant', 'p')
@@ -987,7 +913,13 @@ router.get(
         rowsQb.andWhere('p.pollingCenter = :momPc', { momPc: drillDown.pollingCenter });
       }
 
-      const rows = await rowsQb.getRawMany();
+      const [rows, checkInTotal, dailyTrend] = await Promise.all([
+        rowsQb.getRawMany(),
+        hasDrillDown
+          ? AnalyticsReadService.getTotalCheckInsInScope(eventId, drillDown)
+          : AnalyticsReadService.getTotalCheckIns(eventId),
+        hasDrillDown ? Promise.resolve(undefined) : AnalyticsReadService.getDailyTrendAsPoints(eventId),
+      ]);
 
       const momentum = buildMomentumAnalytics({
         rows,
@@ -995,6 +927,8 @@ router.get(
         targetDate: event.date,
         scopeLabel,
         drillDown,
+        checkInTotal,
+        dailyTrend,
       });
 
       res.json({
@@ -1033,7 +967,93 @@ router.get(
   }
 );
 
-// Get All Check-ins for an Event
+// Get field agent mobilization leaderboard (from summary tables)
+router.get(
+  '/:eventId/field-agents',
+  authenticate,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
+      const skip = (page - 1) * limit;
+      const search =
+        typeof req.query.search === 'string' ? req.query.search.trim() : '';
+
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
+
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const agentStatRepository = AppDataSource.getRepository(EventAgentStat);
+      const baseQb = agentStatRepository
+        .createQueryBuilder('s')
+        .innerJoin(User, 'u', 'u.id = s.userId')
+        .where('s.eventId = :eventId', { eventId });
+
+      if (search) {
+        baseQb.andWhere('u.name LIKE :search', { search: `%${search}%` });
+      }
+
+      const countResult = await baseQb
+        .clone()
+        .select('COUNT(DISTINCT s.userId)', 'total')
+        .getRawOne<{ total: string }>();
+      const total = Number(countResult?.total ?? 0);
+      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+      const rows = await baseQb
+        .select('s.userId', 'userId')
+        .addSelect('u.name', 'name')
+        .addSelect('SUM(s.uniqueMobilized)', 'mobilized')
+        .addSelect('SUM(s.checkInCount)', 'checkIns')
+        .groupBy('s.userId')
+        .addGroupBy('u.name')
+        .orderBy('mobilized', 'DESC')
+        .addOrderBy('u.name', 'ASC')
+        .offset(skip)
+        .limit(limit)
+        .getRawMany<{ userId: string; name: string; mobilized: string; checkIns: string }>();
+
+      res.json({
+        message: 'Field agents retrieved successfully',
+        agents: rows.map((row) => ({
+          userId: row.userId,
+          name: row.name,
+          mobilized: Number(row.mobilized) || 0,
+          checkIns: Number(row.checkIns) || 0,
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
+      });
+    } catch (error) {
+      logger.error('Get field agents error:', {
+        error: error instanceof Error ? error.message : String(error),
+        stack: error instanceof Error ? error.stack : undefined,
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+// Get check-ins for an Event (paginated)
 router.get(
   '/:eventId/checkins',
   authenticate,
@@ -1041,36 +1061,61 @@ router.get(
     try {
       const { eventId } = req.params;
       const { county, constituency, ward, pollingCenter } = req.query;
+      const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 50));
+      const skip = (page - 1) * limit;
       const checkInLogRepository = AppDataSource.getRepository(CheckInLog);
 
       const eventRepository = AppDataSource.getRepository(Event);
-      const event = await eventRepository.findOne({ where: { eventId } });
+      const event = await eventRepository.findOne({
+        where: { eventId },
+        relations: ['assignedUsers'],
+      });
       if (!event) {
         res.status(404).json({ message: 'Event not found' });
         return;
       }
 
-      let query = checkInLogRepository
+      if (!(await assertEventAccessForFieldUser(event, req.user!))) {
+        res.status(403).json({ message: 'Access denied' });
+        return;
+      }
+
+      const applyJurisdictionFilters = (
+        qb: ReturnType<typeof checkInLogRepository.createQueryBuilder>
+      ) => {
+        if (county && typeof county === 'string') {
+          qb.andWhere('participant.county = :county', { county });
+        }
+        if (constituency && typeof constituency === 'string') {
+          qb.andWhere('participant.constituency = :constituency', { constituency });
+        }
+        if (ward && typeof ward === 'string') {
+          qb.andWhere('participant.ward = :ward', { ward });
+        }
+        if (pollingCenter && typeof pollingCenter === 'string') {
+          qb.andWhere('participant.pollingCenter = :pollingCenter', { pollingCenter });
+        }
+        return qb;
+      };
+
+      const countQb = checkInLogRepository
+        .createQueryBuilder('log')
+        .innerJoin('log.participant', 'participant')
+        .where('log.eventId = :eventId', { eventId });
+      applyJurisdictionFilters(countQb);
+      const total = await countQb.getCount();
+      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+
+      let dataQb = checkInLogRepository
         .createQueryBuilder('log')
         .leftJoinAndSelect('log.participant', 'participant')
         .leftJoinAndSelect('log.checkedInBy', 'checkedInBy')
         .where('log.eventId = :eventId', { eventId })
         .orderBy('log.checkedInAt', 'DESC');
+      applyJurisdictionFilters(dataQb);
 
-      if (county && typeof county === 'string') {
-        query = query.andWhere('participant.county = :county', { county });
-      }
-      if (constituency && typeof constituency === 'string') {
-        query = query.andWhere('participant.constituency = :constituency', { constituency });
-      }
-      if (ward && typeof ward === 'string') {
-        query = query.andWhere('participant.ward = :ward', { ward });
-      }
-      if (pollingCenter && typeof pollingCenter === 'string') {
-        query = query.andWhere('participant.pollingCenter = :pollingCenter', { pollingCenter });
-      }
-
-      const checkIns = await query.getMany();
+      const checkIns = await dataQb.skip(skip).take(limit).getMany();
 
       res.json({
         message: 'Check-ins retrieved successfully',
@@ -1096,7 +1141,15 @@ router.get(
             name: log.checkedInBy.name,
             email: log.checkedInBy.email
           } : null
-        }))
+        })),
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages,
+          hasNextPage: page < totalPages,
+          hasPreviousPage: page > 1,
+        },
       });
 
     } catch (error) {
