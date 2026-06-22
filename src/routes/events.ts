@@ -20,6 +20,7 @@ import {
   applyMyCheckInsSort,
   parseMyCheckInsQuery,
 } from '../utils/myCheckInsQuery';
+import { AnalyticsReadService } from '../services/AnalyticsReadService';
 
 const router = Router();
 
@@ -425,14 +426,30 @@ router.get(
 
       let registeredVotersInScope = await JurisdictionService.getRegisteredVotersInScope(event);
 
-      // 1. Total Check-ins
-      const totalCheckIns = await checkInLogRepository.count({ where: { eventId } });
-      
-      // 2. Total Participants
+      const centersInScope = await JurisdictionService.getPollingCentersInEventScope(event);
+      const activeCenters = JurisdictionService.filterCentersByDrillDown(
+        centersInScope,
+        drillDown
+      );
+
+      if (JurisdictionService.hasDrillDownFilter(drillDown) && activeCenters.length > 0) {
+        registeredVotersInScope = JurisdictionService.getRegisteredVotersFromCenters(activeCenters);
+      }
+
+      const [totalCheckIns, uniqueCheckedIn, collectionMaps] = await Promise.all([
+        AnalyticsReadService.getTotalCheckIns(eventId),
+        AnalyticsReadService.getUniqueMobilizedInScope(eventId, drillDown),
+        AnalyticsReadService.getCollectionMaps(eventId, drillDown),
+      ]);
+
+      const collectionByCenter = collectionMaps.byCenter;
+      const collectionByWard = collectionMaps.byWard;
+      const collectionByConstituency = collectionMaps.byConstituency;
+      const collectionByCounty = collectionMaps.byCounty;
+
       const totalParticipants = await participantRepository.count({ where: { eventId } });
 
-      // 3. New Categories Breakdown (Using QueryBuilder for robust NULL handling)
-      
+      // Category breakdowns still require live joins (not stored in summary tables).
       // Invited: isInvited = true
       const invitedCheckIns = await checkInLogRepository
         .createQueryBuilder('log')
@@ -494,92 +511,6 @@ router.get(
         .andWhere('(participant.isRegisteredVoter = :isRegisteredVoterFalse OR participant.isRegisteredVoter IS NULL)', { isRegisteredVoterFalse: false })
         .getCount();
 
-      const pollingCenterCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.pollingCenter', 'name')
-        .addSelect('p.ward', 'ward')
-        .addSelect('p.constituency', 'constituency')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.pollingCenter IS NOT NULL')
-        .andWhere("p.pollingCenter != ''")
-        .groupBy('p.pollingCenter')
-        .addGroupBy('p.ward')
-        .addGroupBy('p.constituency')
-        .getRawMany();
-
-      const collectionByCenter = new Map<string, number>();
-      for (const row of pollingCenterCollectionRaw) {
-        const key = JurisdictionService.compositeKey(
-          row.name || '',
-          row.ward || '',
-          row.constituency || ''
-        );
-        collectionByCenter.set(key, parseInt(row.count, 10) || 0);
-      }
-
-      const wardCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.ward', 'name')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.ward IS NOT NULL')
-        .andWhere("p.ward != ''")
-        .groupBy('p.ward')
-        .getRawMany();
-
-      const constituencyCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.constituency', 'name')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.constituency IS NOT NULL')
-        .andWhere("p.constituency != ''")
-        .groupBy('p.constituency')
-        .getRawMany();
-
-      const countyCollectionRaw = await participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .select('p.county', 'name')
-        .addSelect('COUNT(DISTINCT p.id)', 'count')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId })
-        .andWhere('p.county IS NOT NULL')
-        .andWhere("p.county != ''")
-        .groupBy('p.county')
-        .getRawMany();
-
-      const toAreaMap = (rows: { name: string; count: string }[]) => {
-        const map = new Map<string, number>();
-        for (const row of rows) {
-          if (row.name) {
-            map.set(row.name.toUpperCase().trim(), parseInt(row.count, 10) || 0);
-          }
-        }
-        return map;
-      };
-
-      const collectionByWard = toAreaMap(wardCollectionRaw);
-      const collectionByConstituency = toAreaMap(constituencyCollectionRaw);
-      const collectionByCounty = toAreaMap(countyCollectionRaw);
-
-      const centersInScope = await JurisdictionService.getPollingCentersInEventScope(event);
-      const activeCenters = JurisdictionService.filterCentersByDrillDown(
-        centersInScope,
-        drillDown
-      );
-
-      if (JurisdictionService.hasDrillDownFilter(drillDown) && activeCenters.length > 0) {
-        registeredVotersInScope = JurisdictionService.getRegisteredVotersFromCenters(activeCenters);
-      }
-
       const scopeLabel = JurisdictionService.hasDrillDownFilter(drillDown)
         ? JurisdictionService.drillDownFilterLabel(drillDown)
         : JurisdictionService.getScopeLabel(event);
@@ -592,14 +523,6 @@ router.get(
         .andWhere("(p.phoneNumber IS NULL OR p.phoneNumber = '')");
       JurisdictionService.applyDrillDownToParticipantQuery(missingPhonesQb, drillDown);
       const missingPhones = await missingPhonesQb.getCount();
-
-      const uniqueCheckedInQb = participantRepository
-        .createQueryBuilder('p')
-        .innerJoin('p.checkInLogs', 'l')
-        .where('p.eventId = :eventId', { eventId })
-        .andWhere('l.eventId = :eventId', { eventId });
-      JurisdictionService.applyDrillDownToParticipantQuery(uniqueCheckedInQb, drillDown);
-      const uniqueCheckedIn = await uniqueCheckedInQb.getCount();
 
       const mobilizedParticipantsQb = participantRepository
         .createQueryBuilder('p')
@@ -964,6 +887,8 @@ router.get(
         ? JurisdictionService.drillDownFilterLabel(drillDown)
         : JurisdictionService.getScopeLabel(event);
 
+      const hasDrillDown = JurisdictionService.hasDrillDownFilter(drillDown);
+
       const rowsQb = checkInLogRepository
         .createQueryBuilder('l')
         .innerJoin('l.participant', 'p')
@@ -987,7 +912,13 @@ router.get(
         rowsQb.andWhere('p.pollingCenter = :momPc', { momPc: drillDown.pollingCenter });
       }
 
-      const rows = await rowsQb.getRawMany();
+      const [rows, checkInTotal, dailyTrend] = await Promise.all([
+        rowsQb.getRawMany(),
+        hasDrillDown
+          ? AnalyticsReadService.getTotalCheckInsInScope(eventId, drillDown)
+          : AnalyticsReadService.getTotalCheckIns(eventId),
+        hasDrillDown ? Promise.resolve(undefined) : AnalyticsReadService.getDailyTrendAsPoints(eventId),
+      ]);
 
       const momentum = buildMomentumAnalytics({
         rows,
@@ -995,6 +926,8 @@ router.get(
         targetDate: event.date,
         scopeLabel,
         drillDown,
+        checkInTotal,
+        dailyTrend,
       });
 
       res.json({

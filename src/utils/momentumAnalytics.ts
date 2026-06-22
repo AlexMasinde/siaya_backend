@@ -191,6 +191,10 @@ export function buildMomentumAnalytics(params: {
   targetDate: Date | string | null;
   scopeLabel: string | null;
   drillDown: { ward?: string; constituency?: string; pollingCenter?: string };
+  /** When set, used for totals and campaign pace instead of row count. */
+  checkInTotal?: number;
+  /** Event-wide daily check-in counts from summary tables (no drill-down). */
+  dailyTrend?: TrendPoint[];
 }): MomentumAnalytics {
   const todayEat = toEatDate(new Date());
   const todayStr = formatDateOnly(todayEat);
@@ -205,6 +209,14 @@ export function buildMomentumAnalytics(params: {
   const levelLabel =
     level === 'polling_center' ? 'Polling center' : level === 'ward' ? 'Ward' : 'Constituency';
 
+  if (params.dailyTrend?.length) {
+    for (const point of params.dailyTrend) {
+      dailyMap.set(point.date, point.count);
+      const weekStr = weekStartMonday(point.date);
+      weeklyMap.set(weekStr, (weeklyMap.get(weekStr) ?? 0) + point.count);
+    }
+  }
+
   for (const row of params.rows) {
     const eat = toEatDate(row.checkedInAt);
     const dayStr = formatDateOnly(eat);
@@ -212,8 +224,10 @@ export function buildMomentumAnalytics(params: {
     const dow = mondayBasedDow(eat);
     const hour = eat.getUTCHours();
 
-    dailyMap.set(dayStr, (dailyMap.get(dayStr) ?? 0) + 1);
-    weeklyMap.set(weekStr, (weeklyMap.get(weekStr) ?? 0) + 1);
+    if (!params.dailyTrend?.length) {
+      dailyMap.set(dayStr, (dailyMap.get(dayStr) ?? 0) + 1);
+      weeklyMap.set(weekStr, (weeklyMap.get(weekStr) ?? 0) + 1);
+    }
 
     const heatKey = `${dow}-${hour}`;
     heatmapMap.set(heatKey, (heatmapMap.get(heatKey) ?? 0) + 1);
@@ -267,7 +281,7 @@ export function buildMomentumAnalytics(params: {
     (a, b) => a.percent_of_average - b.percent_of_average || a.name.localeCompare(b.name)
   );
 
-  const mobilized = params.rows.length;
+  const mobilized = params.checkInTotal ?? params.rows.length;
 
   return {
     unique_checked_in: mobilized,
