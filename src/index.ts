@@ -12,6 +12,7 @@ import eventRoutes from './routes/events';
 import participantRoutes from './routes/participants';
 import analyticsRoutes from './routes/analytics';
 import jurisdictionRoutes from './routes/jurisdictions';
+import surveyRoutes from './routes/surveys';
 
 const app = express();
 
@@ -80,6 +81,7 @@ app.use('/api/events', eventRoutes);
 app.use('/api/participants', participantRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/jurisdictions', jurisdictionRoutes);
+app.use('/api/surveys', surveyRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

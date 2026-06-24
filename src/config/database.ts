@@ -7,6 +7,15 @@ import { PollingCenter } from '../entities/PollingCenter';
 import { EventJurisdictionStat } from '../entities/EventJurisdictionStat';
 import { EventDailyStat } from '../entities/EventDailyStat';
 import { EventAgentStat } from '../entities/EventAgentStat';
+import { Survey } from '../entities/Survey';
+import { SurveyAgent } from '../entities/SurveyAgent';
+import { SurveyAssignment } from '../entities/SurveyAssignment';
+import { SurveyStat } from '../entities/SurveyStat';
+import { SurveyAgentStat } from '../entities/SurveyAgentStat';
+import { SurveyJurisdictionStat } from '../entities/SurveyJurisdictionStat';
+import { SurveyDailyStat } from '../entities/SurveyDailyStat';
+import { SurveyResponseOption } from '../entities/SurveyResponseOption';
+import { SurveyResponseOptionStat } from '../entities/SurveyResponseOptionStat';
 
 import { env } from './env';
 import logger from './logger';
@@ -42,6 +51,15 @@ const dbConfig = {
     EventJurisdictionStat,
     EventDailyStat,
     EventAgentStat,
+    Survey,
+    SurveyAgent,
+    SurveyAssignment,
+    SurveyStat,
+    SurveyAgentStat,
+    SurveyJurisdictionStat,
+    SurveyDailyStat,
+    SurveyResponseOption,
+    SurveyResponseOptionStat,
   ],
   migrations: ['src/migrations/**/*.ts'],
   subscribers: ['src/subscribers/**/*.ts'],

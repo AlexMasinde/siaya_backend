@@ -22,6 +22,8 @@ import {
   parseMyCheckInsQuery,
 } from '../utils/myCheckInsQuery';
 import { AnalyticsReadService } from '../services/AnalyticsReadService';
+import { Survey, SurveyStatus } from '../entities/Survey';
+import { SurveyReadService } from '../services/SurveyReadService';
 
 const router = Router();
 
@@ -979,6 +981,7 @@ router.get(
       const skip = (page - 1) * limit;
       const search =
         typeof req.query.search === 'string' ? req.query.search.trim() : '';
+      const fetchAll = req.query.all === 'true';
 
       const eventRepository = AppDataSource.getRepository(Event);
       const event = await eventRepository.findOne({
@@ -1013,27 +1016,49 @@ router.get(
       const total = Number(countResult?.total ?? 0);
       const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
 
-      const rows = await baseQb
+      const agentsQuery = baseQb
         .select('s.userId', 'userId')
         .addSelect('u.name', 'name')
+        .addSelect('u.email', 'email')
         .addSelect('SUM(s.uniqueMobilized)', 'mobilized')
         .addSelect('SUM(s.checkInCount)', 'checkIns')
         .groupBy('s.userId')
         .addGroupBy('u.name')
+        .addGroupBy('u.email')
         .orderBy('mobilized', 'DESC')
-        .addOrderBy('u.name', 'ASC')
-        .offset(skip)
-        .limit(limit)
-        .getRawMany<{ userId: string; name: string; mobilized: string; checkIns: string }>();
+        .addOrderBy('u.name', 'ASC');
+
+      if (!fetchAll) {
+        agentsQuery.offset(skip).limit(limit);
+      }
+
+      const rows = await agentsQuery.getRawMany<{
+        userId: string;
+        name: string;
+        email: string;
+        mobilized: string;
+        checkIns: string;
+      }>();
+
+      const agents = rows.map((row) => ({
+        userId: row.userId,
+        name: row.name,
+        email: row.email,
+        mobilized: Number(row.mobilized) || 0,
+        checkIns: Number(row.checkIns) || 0,
+      }));
+
+      if (fetchAll) {
+        res.json({
+          message: 'Field agents retrieved successfully',
+          agents,
+        });
+        return;
+      }
 
       res.json({
         message: 'Field agents retrieved successfully',
-        agents: rows.map((row) => ({
-          userId: row.userId,
-          name: row.name,
-          mobilized: Number(row.mobilized) || 0,
-          checkIns: Number(row.checkIns) || 0,
-        })),
+        agents,
         pagination: {
           page,
           limit,
@@ -1287,6 +1312,114 @@ router.get(
     } catch (error) {
       logger.error('Generate staff report error:', error);
       res.status(500).json({ message: 'Internal server error during staff report generation' });
+    }
+  }
+);
+
+// List surveys for an event (admin)
+router.get(
+  '/:eventId/surveys',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({ where: { eventId } });
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      const surveys = await SurveyReadService.listEventSurveys(eventId);
+      res.json({ message: 'Surveys retrieved successfully', surveys });
+    } catch (error) {
+      logger.error('List event surveys error:', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+// Create draft survey for an event (admin)
+router.post(
+  '/:eventId/surveys',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const { name } = req.body;
+
+      if (!name || typeof name !== 'string' || !name.trim()) {
+        res.status(400).json({ message: 'Survey name is required' });
+        return;
+      }
+
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({ where: { eventId } });
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      const activeSurvey = await AppDataSource.getRepository(Survey).findOne({
+        where: { eventId, status: SurveyStatus.ACTIVE },
+      });
+      if (activeSurvey) {
+        res.status(400).json({ message: 'Close the active survey before creating another' });
+        return;
+      }
+
+      const surveyRepo = AppDataSource.getRepository(Survey);
+      const survey = surveyRepo.create({
+        eventId,
+        name: name.trim(),
+        createdById: req.user!.id,
+        status: SurveyStatus.DRAFT,
+      });
+      await surveyRepo.save(survey);
+
+      const payload = await SurveyReadService.getSurveyWithStats(survey.id);
+      res.status(201).json({
+        message: 'Survey created successfully',
+        survey: payload,
+      });
+    } catch (error) {
+      logger.error('Create event survey error:', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+// Aggregated supporters across all surveys for an event (admin)
+router.get(
+  '/:eventId/supporter-breakdown',
+  authenticate,
+  requireAdmin,
+  async (req: AuthRequest, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({ where: { eventId } });
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      const breakdown = await SurveyReadService.getEventSupporterJurisdictionBreakdown(eventId);
+      res.json({
+        message: 'Event supporter breakdown retrieved successfully',
+        breakdown,
+      });
+    } catch (error) {
+      logger.error('Event supporter breakdown error:', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ message: 'Internal server error' });
     }
   }
 );
