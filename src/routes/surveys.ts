@@ -91,8 +91,8 @@ router.get(
         .innerJoinAndSelect('sa.survey', 'survey')
         .innerJoinAndSelect('survey.event', 'event')
         .where('sa.userId = :userId', { userId: req.user!.id })
-        .andWhere('survey.status IN (:...statuses)', {
-          statuses: [SurveyStatus.ACTIVE, SurveyStatus.CLOSED],
+        .andWhere('survey.status = :status', {
+          status: SurveyStatus.ACTIVE,
         })
         .orderBy('survey.startedAt', 'DESC')
         .getMany();
