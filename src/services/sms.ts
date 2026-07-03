@@ -51,7 +51,7 @@ class SmsService {
   }
 
   async sendUserCredentials(phoneNumber: string, email: string, password: string): Promise<boolean> {
-    const message = `Welcome to UDA Events! Your account has been created.\nEmail: ${email}\nPassword: ${password}`;
+    const message = `Your account has been created.\nEmail: ${email}\nPassword: ${password}`;
     return this.sendMessage(phoneNumber, message);
   }
 
