@@ -56,7 +56,7 @@ class SmsService {
   }
 
   async sendPasswordReset(phoneNumber: string, email: string, password: string): Promise<boolean> {
-    const message = `UDA Events password reset.\nEmail: ${email}\nNew password: ${password}`;
+    const message = `Password reset.\nEmail: ${email}\nNew password: ${password}`;
     return this.sendMessage(phoneNumber, message);
   }
 }
