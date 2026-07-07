@@ -62,21 +62,31 @@ export function parseLaunchCohorts(raw: unknown): SurveyLaunchCohort[] {
   return raw.filter((item): item is SurveyLaunchCohort => typeof item === 'string' && isValidLaunchCohort(item));
 }
 
+function isDesignatedSupporterFlag(value: number | boolean | string | null | undefined): boolean {
+  return Number(value) === 1;
+}
+
+/** Align with SurveyResponseOptionService.legacyColumnForOption / survey stats. */
 function cohortForPreviousAssignment(row: PreviousAssignmentRow): SurveyLaunchCohort | null {
   if (row.status !== SurveyAssignmentStatus.COMPLETED) {
     return 'pending_previous';
   }
-  if (row.isDesignatedSupporter || row.response === 'supporter') {
+
+  if (isDesignatedSupporterFlag(row.isDesignatedSupporter)) {
     return 'supporters';
   }
+
   const category = row.category;
-  if (category === SurveyResponseCategory.OPPOSITION || row.response === 'not_supporter') {
+  if (category === SurveyResponseCategory.SUPPORTER) {
+    return 'supporters';
+  }
+  if (category === SurveyResponseCategory.OPPOSITION) {
     return 'non_supporters';
   }
-  if (category === SurveyResponseCategory.NEUTRAL || row.response === 'undecided') {
+  if (category === SurveyResponseCategory.NEUTRAL) {
     return 'undecided';
   }
-  if (category === SurveyResponseCategory.UNREACHABLE || row.response === 'not_found') {
+  if (category === SurveyResponseCategory.UNREACHABLE) {
     return 'unreachable';
   }
   if (category === SurveyResponseCategory.RELOCATED) {
@@ -88,7 +98,61 @@ function cohortForPreviousAssignment(row: PreviousAssignmentRow): SurveyLaunchCo
   if (category === SurveyResponseCategory.WITHHELD) {
     return 'withheld';
   }
+
+  // Legacy assignments recorded before custom response options.
+  if (row.response === 'supporter') {
+    return 'supporters';
+  }
+  if (row.response === 'not_supporter') {
+    return 'non_supporters';
+  }
+  if (row.response === 'undecided') {
+    return 'undecided';
+  }
+  if (row.response === 'not_found') {
+    return 'unreachable';
+  }
+
   return 'undecided';
+}
+
+function buildCohortSets(
+  callable: MobilizedRow[],
+  previous: PreviousAssignmentRow[]
+): Record<SurveyLaunchCohort, Set<string>> {
+  const previousIds = new Set(previous.map((row) => row.participantId));
+  const mobilizedById = new Map(callable.map((row) => [row.participantId, row]));
+
+  const cohortSets = Object.fromEntries(
+    SURVEY_LAUNCH_COHORTS.map((key) => [key, new Set<string>()])
+  ) as Record<SurveyLaunchCohort, Set<string>>;
+
+  for (const row of callable) {
+    if (!previousIds.has(row.participantId)) {
+      cohortSets.new_since_previous.add(row.participantId);
+    }
+  }
+
+  for (const row of previous) {
+    const cohort = cohortForPreviousAssignment(row);
+    if (!cohort || !mobilizedById.has(row.participantId)) continue;
+    cohortSets[cohort].add(row.participantId);
+  }
+
+  return cohortSets;
+}
+
+function unionSelectedParticipantIds(
+  cohortSets: Record<SurveyLaunchCohort, Set<string>>,
+  cohorts: SurveyLaunchCohort[]
+): Set<string> {
+  const selectedIds = new Set<string>();
+  for (const cohort of cohorts) {
+    for (const participantId of cohortSets[cohort]) {
+      selectedIds.add(participantId);
+    }
+  }
+  return selectedIds;
 }
 
 export async function fetchMobilizedParticipants(eventId: string): Promise<MobilizedRow[]> {
@@ -180,7 +244,7 @@ export async function previewLaunchCohorts(
     SURVEY_LAUNCH_COHORTS.map((key) => [key, 0])
   ) as Record<SurveyLaunchCohort, number>;
 
-  if (!sourceSurveyId || cohorts.length === 0) {
+  if (!sourceSurveyId) {
     return {
       mobilizedTotal: mobilized.length,
       callableTotal: callable.length,
@@ -194,31 +258,8 @@ export async function previewLaunchCohorts(
   await assertSourceSurvey(eventId, surveyId, sourceSurveyId);
 
   const previous = await fetchPreviousAssignments(sourceSurveyId);
-  const previousIds = new Set(previous.map((row) => row.participantId));
-  const mobilizedById = new Map(callable.map((row) => [row.participantId, row]));
-
-  const cohortSets: Record<SurveyLaunchCohort, Set<string>> = Object.fromEntries(
-    SURVEY_LAUNCH_COHORTS.map((key) => [key, new Set<string>()])
-  ) as Record<SurveyLaunchCohort, Set<string>>;
-
-  for (const row of callable) {
-    if (!previousIds.has(row.participantId)) {
-      cohortSets.new_since_previous.add(row.participantId);
-    }
-  }
-
-  for (const row of previous) {
-    const cohort = cohortForPreviousAssignment(row);
-    if (!cohort || !mobilizedById.has(row.participantId)) continue;
-    cohortSets[cohort].add(row.participantId);
-  }
-
-  const selectedIds = new Set<string>();
-  for (const cohort of cohorts) {
-    for (const participantId of cohortSets[cohort]) {
-      selectedIds.add(participantId);
-    }
-  }
+  const cohortSets = buildCohortSets(callable, previous);
+  const selectedIds = unionSelectedParticipantIds(cohortSets, cohorts);
 
   const cohortCounts = Object.fromEntries(
     SURVEY_LAUNCH_COHORTS.map((key) => [key, cohortSets[key].size])
@@ -229,7 +270,7 @@ export async function previewLaunchCohorts(
     callableTotal: callable.length,
     noPhoneCount,
     cohortCounts,
-    selectedTotal: selectedIds.size,
+    selectedTotal: cohorts.length > 0 ? selectedIds.size : 0,
     mode: 'cohort',
   };
 }
@@ -250,36 +291,12 @@ export async function resolveLaunchCallable(
 
   await assertSourceSurvey(eventId, surveyId, sourceSurveyId);
 
-  const preview = await previewLaunchCohorts(eventId, surveyId, sourceSurveyId, cohorts);
-  if (preview.selectedTotal === 0) {
-    return { mobilized, callable: [], noPhoneCount };
-  }
-
   const previous = await fetchPreviousAssignments(sourceSurveyId);
-  const previousIds = new Set(previous.map((row) => row.participantId));
-  const mobilizedById = new Map(allCallable.map((row) => [row.participantId, row]));
+  const cohortSets = buildCohortSets(allCallable, previous);
+  const selectedIds = unionSelectedParticipantIds(cohortSets, cohorts);
 
-  const cohortSets: Record<SurveyLaunchCohort, Set<string>> = Object.fromEntries(
-    SURVEY_LAUNCH_COHORTS.map((key) => [key, new Set<string>()])
-  ) as Record<SurveyLaunchCohort, Set<string>>;
-
-  for (const row of allCallable) {
-    if (!previousIds.has(row.participantId)) {
-      cohortSets.new_since_previous.add(row.participantId);
-    }
-  }
-
-  for (const row of previous) {
-    const cohort = cohortForPreviousAssignment(row);
-    if (!cohort || !mobilizedById.has(row.participantId)) continue;
-    cohortSets[cohort].add(row.participantId);
-  }
-
-  const selectedIds = new Set<string>();
-  for (const cohort of cohorts) {
-    for (const participantId of cohortSets[cohort]) {
-      selectedIds.add(participantId);
-    }
+  if (selectedIds.size === 0) {
+    return { mobilized, callable: [], noPhoneCount };
   }
 
   const callable = allCallable.filter((row) => selectedIds.has(row.participantId));
