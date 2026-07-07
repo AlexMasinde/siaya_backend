@@ -716,6 +716,7 @@ router.get(
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const { eventId } = req.params;
+      const fetchAll = req.query.all === 'true';
       const page = Math.max(1, parseInt(req.query.page as string, 10) || 1);
       const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string, 10) || 20));
       const skip = (page - 1) * limit;
@@ -750,9 +751,13 @@ router.get(
       applyMyCheckInsFilters(dataQb, filters, { participantJoined: true });
       applyMyCheckInsSort(dataQb, filters.sort);
 
-      const checkIns = await dataQb.skip(skip).take(limit).getMany();
+      if (!fetchAll) {
+        dataQb.skip(skip).take(limit);
+      }
 
-      const totalPages = total === 0 ? 0 : Math.ceil(total / limit);
+      const checkIns = await dataQb.getMany();
+
+      const totalPages = fetchAll ? (total === 0 ? 0 : 1) : total === 0 ? 0 : Math.ceil(total / limit);
 
       res.json({
         message: 'Your check-ins retrieved successfully',
@@ -1410,7 +1415,11 @@ router.get(
         return;
       }
 
-      const breakdown = await SurveyReadService.getEventSupporterJurisdictionBreakdown(eventId);
+      const drillDown = JurisdictionService.parseDrillDownFilter(req.query);
+      const breakdown = await SurveyReadService.getEventSupporterJurisdictionBreakdown(
+        eventId,
+        drillDown
+      );
       res.json({
         message: 'Event supporter breakdown retrieved successfully',
         breakdown,
