@@ -346,6 +346,8 @@ export class SurveyReadService {
 
     const mobilizers = await this.fetchEventMobilizerSupporterStats(eventId, drillDown);
 
+    const surveyOutcomes = await this.getEventAggregatedSurveyOutcomes(eventId);
+
     const breakdown = this.buildSupporterBreakdownFromMaps(
       eventId,
       mobilizedRows,
@@ -359,6 +361,89 @@ export class SurveyReadService {
       ...breakdown,
       mobilizers,
       scope_label: JurisdictionService.drillDownFilterLabel(drillDown),
+      survey_outcomes: surveyOutcomes,
+    };
+  }
+
+  /** Sum phone-survey response metrics across all active/closed surveys on the campaign. */
+  static async getEventAggregatedSurveyOutcomes(eventId: string) {
+    const row = await AppDataSource.query(
+      `SELECT
+         COALESCE(SUM(ss.pending), 0) AS pending,
+         COALESCE(SUM(ss.completed), 0) AS completed,
+         COALESCE(SUM(ss.supporter), 0) AS supporter,
+         COALESCE(SUM(ss.notSupporter), 0) AS not_supporter,
+         COALESCE(SUM(ss.undecided), 0) AS undecided,
+         COALESCE(SUM(ss.notFound), 0) AS not_found,
+         COALESCE(SUM(ss.relocated), 0) AS relocated,
+         COALESCE(SUM(ss.declined), 0) AS declined,
+         COALESCE(SUM(ss.withheld), 0) AS withheld
+       FROM survey_stats ss
+       INNER JOIN surveys s ON s.id = ss.surveyId
+       WHERE s.eventId = ?
+         AND s.status IN ('active', 'closed')`,
+      [eventId]
+    ) as Array<Record<string, string>>;
+
+    const totals = row[0] ?? {};
+    const pending = Number(totals.pending) || 0;
+    const completed = Number(totals.completed) || 0;
+    const supporter = Number(totals.supporter) || 0;
+    const notSupporter = Number(totals.not_supporter) || 0;
+    const undecided = Number(totals.undecided) || 0;
+    const notFound = Number(totals.not_found) || 0;
+    const relocated = Number(totals.relocated) || 0;
+    const declined = Number(totals.declined) || 0;
+    const withheld = Number(totals.withheld) || 0;
+    const classified = supporter + notSupporter + undecided;
+
+    const optionRows = await AppDataSource.query(
+      `SELECT
+         o.label AS label,
+         o.category AS category,
+         MAX(o.isDesignatedSupporter) AS isDesignatedSupporter,
+         SUM(s.count) AS count
+       FROM survey_response_option_stats s
+       INNER JOIN survey_response_options o ON o.id = s.optionId
+       INNER JOIN surveys sur ON sur.id = s.surveyId
+       WHERE sur.eventId = ?
+         AND sur.status IN ('active', 'closed')
+       GROUP BY o.label, o.category
+       ORDER BY count DESC, o.label ASC`,
+      [eventId]
+    ) as Array<{
+      label: string;
+      category: string;
+      isDesignatedSupporter: number;
+      count: string;
+    }>;
+
+    const by_option = optionRows.map((opt) => {
+      const count = Number(opt.count) || 0;
+      return {
+        label: opt.label,
+        category: opt.category,
+        is_designated_supporter: Number(opt.isDesignatedSupporter) === 1,
+        count,
+        percent_of_completed: pct(count, completed),
+      };
+    });
+
+    return {
+      totals: {
+        pending,
+        completed,
+        supporter,
+        not_supporter: notSupporter,
+        undecided,
+        not_found: notFound,
+        relocated,
+        declined,
+        withheld,
+        support_rate_contacted: pct(supporter, classified),
+        classified_total: classified,
+      },
+      by_option,
     };
   }
 

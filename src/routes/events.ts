@@ -1,4 +1,4 @@
-import { Router, Response } from 'express';
+import { Router, Request, Response } from 'express';
 import { AppDataSource } from '../config/database';
 import { Event } from '../entities/Event';
 import { User, UserRole } from '../entities/User';
@@ -1393,6 +1393,45 @@ router.post(
       });
     } catch (error) {
       logger.error('Create event survey error:', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  }
+);
+
+// Aggregated supporters across all surveys for an event (admin)
+router.get(
+  '/:eventId/public/supporter-breakdown',
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { eventId } = req.params;
+      const eventRepository = AppDataSource.getRepository(Event);
+      const event = await eventRepository.findOne({ where: { eventId } });
+      if (!event) {
+        res.status(404).json({ message: 'Event not found' });
+        return;
+      }
+
+      const drillDown = JurisdictionService.parseDrillDownFilter(req.query);
+      const breakdown = await SurveyReadService.getEventSupporterJurisdictionBreakdown(
+        eventId,
+        drillDown
+      );
+      res.json({
+        message: 'Public supporter breakdown retrieved successfully',
+        event: {
+          eventId: event.eventId,
+          eventName: event.eventName,
+          location: event.location,
+          county: event.county,
+          constituency: event.constituency,
+          ward: event.ward,
+        },
+        breakdown,
+      });
+    } catch (error) {
+      logger.error('Public supporter breakdown error:', {
         error: error instanceof Error ? error.message : String(error),
       });
       res.status(500).json({ message: 'Internal server error' });
