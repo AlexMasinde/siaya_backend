@@ -132,6 +132,42 @@ export class AnalyticsReadService {
     return fromJurisdiction + noPcCount;
   }
 
+  /** Live count of unique checked-in voters — includes mobilization after any survey launched. */
+  static async countDistinctMobilizedParticipants(
+    eventId: string,
+    drillDown: DrillDownFilter = {}
+  ): Promise<number> {
+    const conditions = ['l.eventId = ?', 'p.eventId = ?'];
+    const params: unknown[] = [eventId, eventId];
+
+    if (drillDown.county) {
+      conditions.push('p.county = ?');
+      params.push(drillDown.county);
+    }
+    if (drillDown.constituency) {
+      conditions.push('p.constituency = ?');
+      params.push(drillDown.constituency);
+    }
+    if (drillDown.ward) {
+      conditions.push('p.ward = ?');
+      params.push(drillDown.ward);
+    }
+    if (drillDown.pollingCenter) {
+      conditions.push('p.pollingCenter = ?');
+      params.push(drillDown.pollingCenter);
+    }
+
+    const rows = (await AppDataSource.query(
+      `SELECT COUNT(DISTINCT l.participantId) AS cnt
+       FROM check_in_logs l
+       INNER JOIN participants p ON p.id = l.participantId
+       WHERE ${conditions.join(' AND ')}`,
+      params
+    )) as Array<{ cnt: string }>;
+
+    return Number(rows[0]?.cnt ?? 0);
+  }
+
   static async getCollectionMaps(eventId: string, drillDown: DrillDownFilter = {}) {
     const rows = await this.getJurisdictionRows(eventId, drillDown);
     return {
