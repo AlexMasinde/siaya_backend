@@ -314,7 +314,7 @@ export class SurveyReadService {
 
     const stat = await AppDataSource.getRepository(SurveyStat).findOne({ where: { surveyId } });
     const totalSupporters = stat?.supporter ?? 0;
-    const totalMobilized = await AnalyticsReadService.getUniqueMobilizedInScope(eventId);
+    const totalMobilized = await AnalyticsReadService.countDistinctMobilizedParticipants(eventId);
 
     return this.buildSupporterBreakdownFromMaps(
       eventId,
@@ -335,7 +335,10 @@ export class SurveyReadService {
     const supporters = JurisdictionService.hasDrillDownFilter(drillDown)
       ? allSupporters.filter((row) => matchesDrillDownLocation(row, drillDown))
       : allSupporters;
-    const totalMobilized = await AnalyticsReadService.getUniqueMobilizedInScope(eventId, drillDown);
+    const totalMobilized = await AnalyticsReadService.countDistinctMobilizedParticipants(
+      eventId,
+      drillDown
+    );
 
     const surveyCount = await AppDataSource.getRepository(Survey).count({
       where: {
@@ -347,12 +350,14 @@ export class SurveyReadService {
     const mobilizers = await this.fetchEventMobilizerSupporterStats(eventId, drillDown);
 
     const surveyOutcomes = await this.getEventAggregatedSurveyOutcomes(eventId);
+    const distinctSupporters = supporters.length;
+    surveyOutcomes.totals.genuine_support_rate = pct(distinctSupporters, totalMobilized);
 
     const breakdown = this.buildSupporterBreakdownFromMaps(
       eventId,
       mobilizedRows,
       supporters,
-      supporters.length,
+      distinctSupporters,
       totalMobilized,
       surveyCount
     );
@@ -441,6 +446,7 @@ export class SurveyReadService {
         declined,
         withheld,
         support_rate_contacted: pct(supporter, classified),
+        genuine_support_rate: null as number | null,
         classified_total: classified,
       },
       by_option,
