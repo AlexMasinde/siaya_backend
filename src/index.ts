@@ -13,6 +13,8 @@ import participantRoutes from './routes/participants';
 import analyticsRoutes from './routes/analytics';
 import jurisdictionRoutes from './routes/jurisdictions';
 import surveyRoutes from './routes/surveys';
+import mobilizationRoutes from './routes/mobilization';
+import mobilizationPortalRoutes from './routes/mobilizationPortal';
 
 const app = express();
 
@@ -82,6 +84,8 @@ app.use('/api/participants', participantRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/jurisdictions', jurisdictionRoutes);
 app.use('/api/surveys', surveyRoutes);
+app.use('/api/events/:eventId/mobilization', mobilizationRoutes);
+app.use('/api/mobilization', mobilizationPortalRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {

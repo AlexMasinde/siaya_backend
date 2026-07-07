@@ -16,6 +16,8 @@ import { SurveyJurisdictionStat } from '../entities/SurveyJurisdictionStat';
 import { SurveyDailyStat } from '../entities/SurveyDailyStat';
 import { SurveyResponseOption } from '../entities/SurveyResponseOption';
 import { SurveyResponseOptionStat } from '../entities/SurveyResponseOptionStat';
+import { EventMobilizationRole } from '../entities/EventMobilizationRole';
+import { EventMobilizationAssignment } from '../entities/EventMobilizationAssignment';
 
 import { env } from './env';
 import logger from './logger';
@@ -60,6 +62,8 @@ const dbConfig = {
     SurveyDailyStat,
     SurveyResponseOption,
     SurveyResponseOptionStat,
+    EventMobilizationRole,
+    EventMobilizationAssignment,
   ],
   migrations: ['src/migrations/**/*.ts'],
   subscribers: ['src/subscribers/**/*.ts'],

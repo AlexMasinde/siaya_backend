@@ -10,7 +10,55 @@ import { Survey, SurveyStatus } from '../entities/Survey';
 import { User } from '../entities/User';
 import { SurveyResponseOptionService } from './SurveyResponseOptionService';
 import { AnalyticsReadService } from './AnalyticsReadService';
-import { JurisdictionService } from './JurisdictionService';
+import { DrillDownFilter, JurisdictionService } from './JurisdictionService';
+
+function matchesDrillDownLocation(
+  row: {
+    county?: string | null;
+    constituency?: string | null;
+    ward?: string | null;
+    pollingCenter?: string | null;
+  },
+  drillDown: DrillDownFilter
+): boolean {
+  if (drillDown.county && (row.county?.trim() ?? '') !== drillDown.county) return false;
+  if (drillDown.constituency && (row.constituency?.trim() ?? '') !== drillDown.constituency) {
+    return false;
+  }
+  if (drillDown.ward && (row.ward?.trim() ?? '') !== drillDown.ward) return false;
+  if (drillDown.pollingCenter && (row.pollingCenter?.trim() ?? '') !== drillDown.pollingCenter) {
+    return false;
+  }
+  return true;
+}
+
+function participantDrillDownClause(
+  drillDown: DrillDownFilter,
+  alias = 'p'
+): { sql: string; params: string[] } {
+  const parts: string[] = [];
+  const params: string[] = [];
+  if (drillDown.county) {
+    parts.push(`${alias}.county = ?`);
+    params.push(drillDown.county);
+  }
+  if (drillDown.constituency) {
+    parts.push(`${alias}.constituency = ?`);
+    params.push(drillDown.constituency);
+  }
+  if (drillDown.ward) {
+    parts.push(`${alias}.ward = ?`);
+    params.push(drillDown.ward);
+  }
+  if (drillDown.pollingCenter) {
+    parts.push(`${alias}.pollingCenter = ?`);
+    params.push(drillDown.pollingCenter);
+  }
+  return {
+    sql: parts.length ? ` AND ${parts.join(' AND ')}` : '',
+    params,
+  };
+}
 
 export interface SurveyStatsPayload {
   survey: {
@@ -278,10 +326,16 @@ export class SurveyReadService {
     );
   }
 
-  static async getEventSupporterJurisdictionBreakdown(eventId: string) {
-    const mobilizedRows = await AnalyticsReadService.getJurisdictionRows(eventId);
-    const supporters = await this.fetchDistinctEventSupporters(eventId);
-    const totalMobilized = await AnalyticsReadService.getUniqueMobilizedInScope(eventId);
+  static async getEventSupporterJurisdictionBreakdown(
+    eventId: string,
+    drillDown: DrillDownFilter = {}
+  ) {
+    const mobilizedRows = await AnalyticsReadService.getJurisdictionRows(eventId, drillDown);
+    const allSupporters = await this.fetchDistinctEventSupporters(eventId);
+    const supporters = JurisdictionService.hasDrillDownFilter(drillDown)
+      ? allSupporters.filter((row) => matchesDrillDownLocation(row, drillDown))
+      : allSupporters;
+    const totalMobilized = await AnalyticsReadService.getUniqueMobilizedInScope(eventId, drillDown);
 
     const surveyCount = await AppDataSource.getRepository(Survey).count({
       where: {
@@ -290,7 +344,7 @@ export class SurveyReadService {
       },
     });
 
-    const mobilizers = await this.fetchEventMobilizerSupporterStats(eventId);
+    const mobilizers = await this.fetchEventMobilizerSupporterStats(eventId, drillDown);
 
     const breakdown = this.buildSupporterBreakdownFromMaps(
       eventId,
@@ -301,10 +355,20 @@ export class SurveyReadService {
       surveyCount
     );
 
-    return { ...breakdown, mobilizers };
+    return {
+      ...breakdown,
+      mobilizers,
+      scope_label: JurisdictionService.drillDownFilterLabel(drillDown),
+    };
   }
 
-  private static async fetchEventMobilizerSupporterStats(eventId: string) {
+  private static async fetchEventMobilizerSupporterStats(
+    eventId: string,
+    drillDown: DrillDownFilter = {}
+  ) {
+    const { sql: participantFilterSql, params: participantFilterParams } =
+      participantDrillDownClause(drillDown);
+
     const rows = await AppDataSource.query(
       `SELECT
          pm.userId,
@@ -330,6 +394,7 @@ export class SurveyReadService {
          WHERE l.eventId = ?
            AND l.checkedInById IS NOT NULL
        ) pm
+       INNER JOIN participants p ON p.id = pm.participantId AND p.eventId = ?${participantFilterSql}
        INNER JOIN users u ON u.id = pm.userId
        LEFT JOIN (
          SELECT DISTINCT a.participantId
@@ -342,8 +407,9 @@ export class SurveyReadService {
            AND (o.isDesignatedSupporter = 1 OR a.response = 'supporter')
        ) sup ON sup.participantId = pm.participantId
        GROUP BY pm.userId, u.name, u.email
+       HAVING mobilized > 0
        ORDER BY supporters DESC, mobilized DESC, u.name ASC`,
-      [eventId, eventId, eventId, eventId]
+      [eventId, eventId, eventId, eventId, ...participantFilterParams, eventId]
     ) as Array<{
       userId: string;
       name: string;
