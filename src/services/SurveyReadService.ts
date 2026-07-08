@@ -105,6 +105,71 @@ function pct(numerator: number, denominator: number): number | null {
   return parseFloat(((numerator / denominator) * 100).toFixed(1));
 }
 
+type CampaignOutcomeBucket =
+  | 'supporter'
+  | 'not_supporter'
+  | 'undecided'
+  | 'not_found'
+  | 'relocated'
+  | 'declined'
+  | 'withheld';
+
+interface LatestCampaignResponse {
+  participantId: string;
+  ward: string;
+  constituency: string;
+  county: string;
+  pollingCenter: string;
+  response: string | null;
+  label: string;
+  category: string | null;
+  isDesignatedSupporter: boolean;
+}
+
+function isCampaignSupporter(row: LatestCampaignResponse): boolean {
+  return (
+    row.isDesignatedSupporter ||
+    row.category === 'supporter' ||
+    row.response === 'supporter'
+  );
+}
+
+function campaignOutcomeBucket(row: LatestCampaignResponse): CampaignOutcomeBucket {
+  if (isCampaignSupporter(row)) return 'supporter';
+
+  switch (row.category) {
+    case 'opposition':
+      return 'not_supporter';
+    case 'neutral':
+      return 'undecided';
+    case 'unreachable':
+      return 'not_found';
+    case 'relocated':
+      return 'relocated';
+    case 'declined':
+      return 'declined';
+    case 'withheld':
+      return 'withheld';
+    case 'supporter':
+      return 'supporter';
+    default:
+      break;
+  }
+
+  switch (row.response) {
+    case 'not_supporter':
+      return 'not_supporter';
+    case 'undecided':
+      return 'undecided';
+    case 'not_found':
+      return 'not_found';
+    case 'supporter':
+      return 'supporter';
+    default:
+      return 'undecided';
+  }
+}
+
 export class SurveyReadService {
   static async getSurveyWithStats(surveyId: string): Promise<SurveyStatsPayload | null> {
     const surveyRepo = AppDataSource.getRepository(Survey);
@@ -331,10 +396,20 @@ export class SurveyReadService {
     drillDown: DrillDownFilter = {}
   ) {
     const mobilizedRows = await AnalyticsReadService.getJurisdictionRows(eventId, drillDown);
-    const allSupporters = await this.fetchDistinctEventSupporters(eventId);
-    const supporters = JurisdictionService.hasDrillDownFilter(drillDown)
-      ? allSupporters.filter((row) => matchesDrillDownLocation(row, drillDown))
-      : allSupporters;
+    const latestResponses = await this.fetchLatestCompletedResponses(eventId);
+    const scopedResponses = JurisdictionService.hasDrillDownFilter(drillDown)
+      ? latestResponses.filter((row) => matchesDrillDownLocation(row, drillDown))
+      : latestResponses;
+
+    const supporters = scopedResponses
+      .filter((row) => isCampaignSupporter(row))
+      .map((row) => ({
+        ward: row.ward,
+        constituency: row.constituency,
+        county: row.county,
+        pollingCenter: row.pollingCenter,
+      }));
+
     const totalMobilized = await AnalyticsReadService.countDistinctMobilizedParticipants(
       eventId,
       drillDown
@@ -347,9 +422,15 @@ export class SurveyReadService {
       },
     });
 
-    const mobilizers = await this.fetchEventMobilizerSupporterStats(eventId, drillDown);
-
-    const surveyOutcomes = await this.getEventAggregatedSurveyOutcomes(eventId);
+    const latestSupporterIds = new Set(
+      scopedResponses.filter((row) => isCampaignSupporter(row)).map((row) => row.participantId)
+    );
+    const mobilizers = await this.fetchEventMobilizerSupporterStats(
+      eventId,
+      drillDown,
+      latestSupporterIds
+    );
+    const surveyOutcomes = this.buildCampaignOutcomesFromLatest(scopedResponses);
     const distinctSupporters = supporters.length;
     surveyOutcomes.totals.genuine_support_rate = pct(distinctSupporters, totalMobilized);
 
@@ -370,103 +451,171 @@ export class SurveyReadService {
     };
   }
 
-  /** Sum phone-survey response metrics across all active/closed surveys on the campaign. */
+  /**
+   * Campaign-level outcomes: one row per voter, latest completed assignment wins.
+   * Does not SUM survey_stats (which double-count voters surveyed more than once).
+   */
   static async getEventAggregatedSurveyOutcomes(eventId: string) {
-    const row = await AppDataSource.query(
-      `SELECT
-         COALESCE(SUM(ss.pending), 0) AS pending,
-         COALESCE(SUM(ss.completed), 0) AS completed,
-         COALESCE(SUM(ss.supporter), 0) AS supporter,
-         COALESCE(SUM(ss.notSupporter), 0) AS not_supporter,
-         COALESCE(SUM(ss.undecided), 0) AS undecided,
-         COALESCE(SUM(ss.notFound), 0) AS not_found,
-         COALESCE(SUM(ss.relocated), 0) AS relocated,
-         COALESCE(SUM(ss.declined), 0) AS declined,
-         COALESCE(SUM(ss.withheld), 0) AS withheld
-       FROM survey_stats ss
-       INNER JOIN surveys s ON s.id = ss.surveyId
-       WHERE s.eventId = ?
-         AND s.status IN ('active', 'closed')`,
-      [eventId]
-    ) as Array<Record<string, string>>;
+    const latestResponses = await this.fetchLatestCompletedResponses(eventId);
+    return this.buildCampaignOutcomesFromLatest(latestResponses);
+  }
 
-    const totals = row[0] ?? {};
-    const pending = Number(totals.pending) || 0;
-    const completed = Number(totals.completed) || 0;
-    const supporter = Number(totals.supporter) || 0;
-    const notSupporter = Number(totals.not_supporter) || 0;
-    const undecided = Number(totals.undecided) || 0;
-    const notFound = Number(totals.not_found) || 0;
-    const relocated = Number(totals.relocated) || 0;
-    const declined = Number(totals.declined) || 0;
-    const withheld = Number(totals.withheld) || 0;
-    const classified = supporter + notSupporter + undecided;
+  private static buildCampaignOutcomesFromLatest(rows: LatestCampaignResponse[]) {
+    const totals = {
+      pending: 0,
+      completed: rows.length,
+      supporter: 0,
+      not_supporter: 0,
+      undecided: 0,
+      not_found: 0,
+      relocated: 0,
+      declined: 0,
+      withheld: 0,
+      support_rate_contacted: null as number | null,
+      genuine_support_rate: null as number | null,
+      classified_total: 0,
+    };
 
-    const optionRows = await AppDataSource.query(
-      `SELECT
-         o.label AS label,
-         o.category AS category,
-         MAX(o.isDesignatedSupporter) AS isDesignatedSupporter,
-         SUM(s.count) AS count
-       FROM survey_response_option_stats s
-       INNER JOIN survey_response_options o ON o.id = s.optionId
-       INNER JOIN surveys sur ON sur.id = s.surveyId
-       WHERE sur.eventId = ?
-         AND sur.status IN ('active', 'closed')
-       GROUP BY o.label, o.category
-       ORDER BY count DESC, o.label ASC`,
-      [eventId]
-    ) as Array<{
+    type OptionAcc = {
       label: string;
       category: string;
+      is_designated_supporter: boolean;
+      count: number;
+    };
+
+    const byOptionMap = new Map<string, OptionAcc>();
+
+    for (const row of rows) {
+      const bucket = campaignOutcomeBucket(row);
+      totals[bucket] += 1;
+
+      const label = row.label.trim() || 'Unknown';
+      const category =
+        isCampaignSupporter(row) && !row.category ? 'supporter' : row.category || 'neutral';
+      const key = `${label.toUpperCase()}|${category}|${row.isDesignatedSupporter ? 1 : 0}`;
+      const existing = byOptionMap.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        byOptionMap.set(key, {
+          label,
+          category,
+          is_designated_supporter: isCampaignSupporter(row),
+          count: 1,
+        });
+      }
+    }
+
+    const classified = totals.supporter + totals.not_supporter + totals.undecided;
+    totals.classified_total = classified;
+    totals.support_rate_contacted = pct(totals.supporter, classified);
+
+    const by_option = [...byOptionMap.values()]
+      .map((opt) => ({
+        ...opt,
+        percent_of_completed: pct(opt.count, totals.completed),
+      }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+
+    return { totals, by_option };
+  }
+
+  /**
+   * Latest completed survey response per participant for an event.
+   * Prefer recordedAt DESC, then updatedAt / id as stable tie-breakers.
+   */
+  private static async fetchLatestCompletedResponses(
+    eventId: string
+  ): Promise<LatestCampaignResponse[]> {
+    const rows = (await AppDataSource.query(
+      `SELECT
+         a.participantId,
+         a.ward,
+         a.constituency,
+         a.county,
+         a.pollingCenter,
+         a.response,
+         a.recordedAt,
+         a.updatedAt,
+         a.id,
+         o.label AS optionLabel,
+         o.category AS category,
+         COALESCE(o.isDesignatedSupporter, 0) AS isDesignatedSupporter
+       FROM survey_assignments a
+       INNER JOIN surveys s ON s.id = a.surveyId
+       LEFT JOIN survey_response_options o ON o.id = a.responseOptionId
+       WHERE s.eventId = ?
+         AND s.status IN ('active', 'closed')
+         AND a.status = 'completed'
+       ORDER BY
+         a.participantId ASC,
+         COALESCE(a.recordedAt, a.updatedAt) DESC,
+         a.updatedAt DESC,
+         a.id DESC`,
+      [eventId]
+    )) as Array<{
+      participantId: string;
+      ward: string | null;
+      constituency: string | null;
+      county: string | null;
+      pollingCenter: string | null;
+      response: string | null;
+      recordedAt: Date | string | null;
+      updatedAt: Date | string | null;
+      id: string;
+      optionLabel: string | null;
+      category: string | null;
       isDesignatedSupporter: number;
-      count: string;
     }>;
 
-    const by_option = optionRows.map((opt) => {
-      const count = Number(opt.count) || 0;
-      return {
-        label: opt.label,
-        category: opt.category,
-        is_designated_supporter: Number(opt.isDesignatedSupporter) === 1,
-        count,
-        percent_of_completed: pct(count, completed),
-      };
-    });
+    const byParticipant = new Map<string, LatestCampaignResponse>();
 
-    return {
-      totals: {
-        pending,
-        completed,
-        supporter,
-        not_supporter: notSupporter,
-        undecided,
-        not_found: notFound,
-        relocated,
-        declined,
-        withheld,
-        support_rate_contacted: pct(supporter, classified),
-        genuine_support_rate: null as number | null,
-        classified_total: classified,
-      },
-      by_option,
-    };
+    for (const row of rows) {
+      if (byParticipant.has(row.participantId)) continue;
+
+      const isDesignated = Number(row.isDesignatedSupporter) === 1;
+      const label =
+        row.optionLabel?.trim() ||
+        (row.response === 'supporter'
+          ? 'Supporter'
+          : row.response === 'not_supporter'
+            ? 'Not supporter'
+            : row.response === 'undecided'
+              ? 'Undecided'
+              : row.response === 'not_found'
+                ? 'Not found'
+                : 'Unknown');
+
+      byParticipant.set(row.participantId, {
+        participantId: row.participantId,
+        ward: row.ward?.trim() ?? '',
+        constituency: row.constituency?.trim() ?? '',
+        county: row.county?.trim() ?? '',
+        pollingCenter: row.pollingCenter?.trim() ?? '',
+        response: row.response,
+        label,
+        category: row.category,
+        isDesignatedSupporter: isDesignated,
+      });
+    }
+
+    return [...byParticipant.values()];
   }
 
   private static async fetchEventMobilizerSupporterStats(
     eventId: string,
-    drillDown: DrillDownFilter = {}
+    drillDown: DrillDownFilter = {},
+    latestSupporterParticipantIds: Set<string> = new Set()
   ) {
     const { sql: participantFilterSql, params: participantFilterParams } =
       participantDrillDownClause(drillDown);
 
-    const rows = await AppDataSource.query(
+    const rows = (await AppDataSource.query(
       `SELECT
          pm.userId,
          u.name,
          u.email,
-         COUNT(DISTINCT pm.participantId) AS mobilized,
-         COUNT(DISTINCT CASE WHEN sup.participantId IS NOT NULL THEN pm.participantId END) AS supporters
+         pm.participantId
        FROM (
          SELECT l.participantId, l.checkedInById AS userId
          FROM check_in_logs l
@@ -486,86 +635,54 @@ export class SurveyReadService {
            AND l.checkedInById IS NOT NULL
        ) pm
        INNER JOIN participants p ON p.id = pm.participantId AND p.eventId = ?${participantFilterSql}
-       INNER JOIN users u ON u.id = pm.userId
-       LEFT JOIN (
-         SELECT DISTINCT a.participantId
-         FROM survey_assignments a
-         INNER JOIN surveys s ON s.id = a.surveyId
-         LEFT JOIN survey_response_options o ON o.id = a.responseOptionId
-         WHERE s.eventId = ?
-           AND s.status IN ('active', 'closed')
-           AND a.status = 'completed'
-           AND (o.isDesignatedSupporter = 1 OR a.response = 'supporter')
-       ) sup ON sup.participantId = pm.participantId
-       GROUP BY pm.userId, u.name, u.email
-       HAVING mobilized > 0
-       ORDER BY supporters DESC, mobilized DESC, u.name ASC`,
-      [eventId, eventId, eventId, eventId, ...participantFilterParams, eventId]
-    ) as Array<{
+       INNER JOIN users u ON u.id = pm.userId`,
+      [eventId, eventId, eventId, eventId, ...participantFilterParams]
+    )) as Array<{
       userId: string;
       name: string;
       email: string;
-      mobilized: string;
-      supporters: string;
-    }>;
-
-    return rows.map((row) => {
-      const mobilized = Number(row.mobilized) || 0;
-      const supporters = Number(row.supporters) || 0;
-      return {
-        userId: row.userId,
-        name: row.name,
-        email: row.email,
-        mobilized,
-        supporters,
-        support_rate: pct(supporters, mobilized),
-      };
-    });
-  }
-
-  private static async fetchDistinctEventSupporters(eventId: string) {
-    const rows = await AppDataSource.query(
-      `SELECT
-         a.participantId,
-         a.ward,
-         a.constituency,
-         a.county,
-         a.pollingCenter,
-         a.recordedAt
-       FROM survey_assignments a
-       INNER JOIN surveys s ON s.id = a.surveyId
-       LEFT JOIN survey_response_options o ON o.id = a.responseOptionId
-       WHERE s.eventId = ?
-         AND s.status IN ('active', 'closed')
-         AND a.status = 'completed'
-         AND (o.isDesignatedSupporter = 1 OR a.response = 'supporter')
-       ORDER BY a.recordedAt DESC`,
-      [eventId]
-    ) as Array<{
       participantId: string;
-      ward: string | null;
-      constituency: string | null;
-      county: string | null;
-      pollingCenter: string | null;
-      recordedAt: Date | string | null;
     }>;
 
-    const byParticipant = new Map<
-      string,
-      { ward: string; constituency: string; county: string; pollingCenter: string }
-    >();
+    type Acc = {
+      userId: string;
+      name: string;
+      email: string;
+      mobilized: number;
+      supporters: number;
+    };
+    const byUser = new Map<string, Acc>();
 
     for (const row of rows) {
-      if (byParticipant.has(row.participantId)) continue;
-      byParticipant.set(row.participantId, {
-        ward: row.ward?.trim() ?? '',
-        constituency: row.constituency?.trim() ?? '',
-        county: row.county?.trim() ?? '',
-        pollingCenter: row.pollingCenter?.trim() ?? '',
-      });
+      let entry = byUser.get(row.userId);
+      if (!entry) {
+        entry = {
+          userId: row.userId,
+          name: row.name,
+          email: row.email,
+          mobilized: 0,
+          supporters: 0,
+        };
+        byUser.set(row.userId, entry);
+      }
+      entry.mobilized += 1;
+      if (latestSupporterParticipantIds.has(row.participantId)) {
+        entry.supporters += 1;
+      }
     }
 
-    return [...byParticipant.values()];
+    return [...byUser.values()]
+      .filter((row) => row.mobilized > 0)
+      .map((row) => ({
+        ...row,
+        support_rate: pct(row.supporters, row.mobilized),
+      }))
+      .sort(
+        (a, b) =>
+          b.supporters - a.supporters ||
+          b.mobilized - a.mobilized ||
+          a.name.localeCompare(b.name)
+      );
   }
 
   private static supportersFromJurisdictionStats(
