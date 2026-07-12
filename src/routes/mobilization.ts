@@ -1,5 +1,7 @@
 import { Router, Response } from 'express';
 import { authenticate, AuthRequest } from '../middleware/auth';
+import { AppDataSource } from '../config/database';
+import { EventMobilizationAssignment } from '../entities/EventMobilizationAssignment';
 import { EventMobilizationRoleType } from '../entities/EventMobilizationRole';
 import {
   assertCoordinatorAccess,
@@ -424,11 +426,31 @@ router.get('/pool', authenticate, async (req: AuthRequest, res: Response): Promi
     await assertMobilizerAccess(req.user!, event);
 
     const role = await getMobilizationRole(req.user!.id, eventId);
-    if (role !== EventMobilizationRoleType.MOBILIZER) {
-      throw new MobilizationAccessError('Only mobilizers can browse the voter pool', 403);
+    const isAdmin = isMobilizationAdmin(req.user!, event);
+    const requestedMobilizerId = req.query.mobilizerUserId as string | undefined;
+
+    let mobilizerUserId: string;
+    if (role === EventMobilizationRoleType.MOBILIZER && !isAdmin) {
+      mobilizerUserId = req.user!.id;
+    } else if (requestedMobilizerId) {
+      await assertCoordinatorAccess(req.user!, event);
+      await MobilizationRosterService.assertCanManageMobilizer(
+        eventId,
+        requestedMobilizerId,
+        req.user!.id,
+        { isAdmin }
+      );
+      mobilizerUserId = requestedMobilizerId;
+    } else {
+      throw new MobilizationAccessError(
+        role === EventMobilizationRoleType.COORDINATOR || isAdmin
+          ? 'mobilizerUserId is required'
+          : 'Only mobilizers can browse the voter pool',
+        role === EventMobilizationRoleType.COORDINATOR || isAdmin ? 400 : 403
+      );
     }
 
-    const result = await MobilizationReadService.listMobilizerPool(eventId, req.user!.id, {
+    const result = await MobilizationReadService.listMobilizerPool(eventId, mobilizerUserId, {
       search: req.query.search as string | undefined,
       page: parseInt(req.query.page as string, 10) || 1,
       limit: parseInt(req.query.limit as string, 10) || 50,
@@ -440,14 +462,17 @@ router.get('/pool', authenticate, async (req: AuthRequest, res: Response): Promi
   }
 });
 
-// POST /api/events/:eventId/mobilization/assignments/claim — mobilizer self-selects voters
+// POST /api/events/:eventId/mobilization/assignments/claim — mobilizer self-selects, or coordinator assigns
 router.post(
   '/assignments/claim',
   authenticate,
   async (req: AuthRequest, res: Response): Promise<void> => {
     try {
       const eventId = req.params.eventId as string;
-      const { participantIds } = req.body as { participantIds?: string[] };
+      const { participantIds, mobilizerUserId: bodyMobilizerUserId } = req.body as {
+        participantIds?: string[];
+        mobilizerUserId?: string;
+      };
 
       if (!Array.isArray(participantIds)) {
         res.status(400).json({ message: 'participantIds array is required' });
@@ -458,15 +483,30 @@ router.post(
       await assertMobilizerAccess(req.user!, event);
 
       const role = await getMobilizationRole(req.user!.id, eventId);
-      if (role !== EventMobilizationRoleType.MOBILIZER) {
-        throw new MobilizationAccessError('Only mobilizers can claim voters', 403);
+      const isAdmin = isMobilizationAdmin(req.user!, event);
+
+      let mobilizerUserId: string;
+      let allowOnBehalf = false;
+
+      if (role === EventMobilizationRoleType.MOBILIZER && !isAdmin) {
+        mobilizerUserId = req.user!.id;
+      } else if (bodyMobilizerUserId) {
+        await assertCoordinatorAccess(req.user!, event);
+        mobilizerUserId = bodyMobilizerUserId;
+        allowOnBehalf = true;
+      } else {
+        throw new MobilizationAccessError(
+          'mobilizerUserId is required when assigning on behalf of a mobilizer',
+          400
+        );
       }
 
       const result = await MobilizationAssignmentService.claimBatch(
         eventId,
-        req.user!.id,
+        mobilizerUserId,
         participantIds,
-        req.user!.id
+        req.user!.id,
+        { allowOnBehalf, isAdmin }
       );
       res.status(201).json(result);
     } catch (error) {
@@ -496,6 +536,18 @@ router.delete(
         );
       } else {
         await assertCoordinatorAccess(req.user!, event);
+        const assignment = await AppDataSource.getRepository(EventMobilizationAssignment).findOne({
+          where: { id: assignmentId, eventId },
+        });
+        if (!assignment) {
+          throw new MobilizationAccessError('Assignment not found', 404);
+        }
+        await MobilizationRosterService.assertCanManageMobilizer(
+          eventId,
+          assignment.mobilizerUserId,
+          req.user!.id,
+          { isAdmin }
+        );
         await MobilizationAssignmentService.releaseClaim(
           eventId,
           assignmentId,
@@ -546,6 +598,12 @@ router.get('/my', authenticate, async (req: AuthRequest, res: Response): Promise
 
     if (mobilizerUserId !== req.user!.id) {
       await assertCoordinatorAccess(req.user!, event);
+      await MobilizationRosterService.assertCanManageMobilizer(
+        eventId,
+        mobilizerUserId,
+        req.user!.id,
+        { isAdmin: isMobilizationAdmin(req.user!, event) }
+      );
     }
 
     const assignments = await MobilizationReadService.listMyAssignments(
@@ -591,23 +649,18 @@ router.patch(
       await assertMobilizerAccess(req.user!, event);
 
       const role = await getMobilizationRole(req.user!.id, eventId);
-      const mobilizerOnly =
-        role === EventMobilizationRoleType.MOBILIZER &&
-        !(await (async () => {
-          try {
-            await assertMobilizationAdmin(req.user!, event);
-            return true;
-          } catch {
-            return false;
-          }
-        })());
+      const isAdmin = isMobilizationAdmin(req.user!, event);
+      const mobilizerOnly = role === EventMobilizationRoleType.MOBILIZER && !isAdmin;
+      const allowOnBehalf =
+        !mobilizerOnly &&
+        (role === EventMobilizationRoleType.COORDINATOR || isAdmin);
 
       const row = await MobilizationAssignmentService.setVoted(
         eventId,
         assignmentId,
         voted,
         req.user!.id,
-        { mobilizerOnly }
+        { mobilizerOnly, allowOnBehalf, isAdmin }
       );
 
       res.json({

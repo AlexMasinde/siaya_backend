@@ -293,6 +293,23 @@ export class MobilizationRosterService {
     );
   }
 
+  /** Coordinators may only manage mobilizers they added; admins may manage any. */
+  static async assertCanManageMobilizer(
+    eventId: string,
+    mobilizerUserId: string,
+    actorId: string,
+    options: { isAdmin?: boolean } = {}
+  ): Promise<EventMobilizationRole> {
+    const row = await this.findRole(eventId, mobilizerUserId);
+    if (!row || row.role !== EventMobilizationRoleType.MOBILIZER) {
+      throw new MobilizationAccessError('Mobilizer not found on this campaign', 404);
+    }
+    if (!options.isAdmin && row.addedById !== actorId) {
+      throw new MobilizationAccessError('You can only manage mobilizers you added', 403);
+    }
+    return row;
+  }
+
   static async removeRole(eventId: string, userId: string): Promise<void> {
     const repo = AppDataSource.getRepository(EventMobilizationRole);
     const existing = await repo.findOne({ where: { eventId, userId } });

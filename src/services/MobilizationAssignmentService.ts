@@ -16,15 +16,29 @@ export class MobilizationAssignmentService {
     });
   }
 
-  /** Mobilizer self-selects registered voters from their assigned polling center (max 30). */
+  /**
+   * Assign registered voters from a mobilizer's polling center (max 30).
+   * Mobilizers claim for themselves; coordinators/admins can assign on behalf of a mobilizer.
+   */
   static async claimBatch(
     eventId: string,
     mobilizerUserId: string,
     participantIds: string[],
-    actorId: string
+    actorId: string,
+    options: { allowOnBehalf?: boolean; isAdmin?: boolean } = {}
   ): Promise<{ created: number; assignmentIds: string[] }> {
-    if (mobilizerUserId !== actorId) {
+    const onBehalf = mobilizerUserId !== actorId;
+    if (onBehalf && !options.allowOnBehalf) {
       throw new MobilizationAccessError('Mobilizers can only claim voters for themselves', 403);
+    }
+
+    if (onBehalf) {
+      await MobilizationRosterService.assertCanManageMobilizer(
+        eventId,
+        mobilizerUserId,
+        actorId,
+        { isAdmin: options.isAdmin }
+      );
     }
 
     const uniqueIds = [...new Set(participantIds.filter(Boolean))];
@@ -40,7 +54,7 @@ export class MobilizationAssignmentService {
     const current = await this.countForMobilizer(eventId, mobilizerUserId);
     if (current + uniqueIds.length > MAX_MOBILIZER_ASSIGNMENTS) {
       throw new MobilizationAccessError(
-        `You cannot exceed ${MAX_MOBILIZER_ASSIGNMENTS} voters (currently ${current})`,
+        `Cannot exceed ${MAX_MOBILIZER_ASSIGNMENTS} voters (currently ${current})`,
         400
       );
     }
@@ -62,7 +76,7 @@ export class MobilizationAssignmentService {
       }
       if (!participantInPollingCenter(participant, assignedPc)) {
         throw new MobilizationAccessError(
-          `${participant.name ?? participant.id} is not in your assigned polling center`,
+          `${participant.name ?? participant.id} is not in the mobilizer's assigned polling center`,
           400
         );
       }
@@ -131,7 +145,12 @@ export class MobilizationAssignmentService {
     assignmentId: string,
     voted: boolean,
     actorId: string,
-    options: { mobilizerOnly?: boolean } = {}
+    options: {
+      mobilizerOnly?: boolean;
+      /** When set, actor may mark voted for any assignment belonging to this mobilizer. */
+      allowOnBehalf?: boolean;
+      isAdmin?: boolean;
+    } = {}
   ): Promise<EventMobilizationAssignment> {
     const repo = AppDataSource.getRepository(EventMobilizationAssignment);
     const row = await repo.findOne({ where: { id: assignmentId, eventId } });
@@ -141,6 +160,19 @@ export class MobilizationAssignmentService {
 
     if (options.mobilizerOnly && row.mobilizerUserId !== actorId) {
       throw new MobilizationAccessError('Access denied');
+    }
+
+    if (
+      options.allowOnBehalf &&
+      row.mobilizerUserId !== actorId &&
+      !options.mobilizerOnly
+    ) {
+      await MobilizationRosterService.assertCanManageMobilizer(
+        eventId,
+        row.mobilizerUserId,
+        actorId,
+        { isAdmin: options.isAdmin }
+      );
     }
 
     row.votedAt = voted ? new Date() : null;
