@@ -51,7 +51,7 @@ class SmsService {
   }
 
   async sendUserCredentials(phoneNumber: string, email: string, password: string): Promise<boolean> {
-    const message = `Your account has been created.\nEmail: ${email}\nPassword: ${password}`;
+    const message = `Siaya Events login\nEmail: ${email}\nPassword: ${password}`;
     return this.sendMessage(phoneNumber, message);
   }
 

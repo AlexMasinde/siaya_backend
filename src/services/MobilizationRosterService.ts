@@ -305,7 +305,10 @@ export class MobilizationRosterService {
       throw new MobilizationAccessError('Mobilizer not found on this campaign', 404);
     }
     if (!options.isAdmin && row.addedById !== actorId) {
-      throw new MobilizationAccessError('You can only manage mobilizers you added', 403);
+      throw new MobilizationAccessError(
+        'You can only assign voters to mobilizers you added',
+        403
+      );
     }
     return row;
   }

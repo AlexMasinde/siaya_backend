@@ -13,7 +13,6 @@ import {
   isMobilizationAdmin,
   MobilizationAccessError,
   MAX_MOBILIZER_ASSIGNMENTS,
-  MAX_MOBILIZERS_PER_COORDINATOR,
 } from '../services/MobilizationAccessService';
 import { MobilizationRosterService } from '../services/MobilizationRosterService';
 import { MobilizationAssignmentService } from '../services/MobilizationAssignmentService';
@@ -170,7 +169,7 @@ router.post('/mobilizers/create', authenticate, async (req: AuthRequest, res: Re
         pollingCenter: normalizePollingCenterFields(pollingCenter, ward, constituency),
       },
       req.user!.id,
-      { enforceCoordinatorCapacity: !admin }
+      { enforceCoordinatorCapacity: false }
     );
 
     res.status(201).json(result);
@@ -229,6 +228,7 @@ router.get('/summary', authenticate, async (req: AuthRequest, res: Response): Pr
       slotsRemaining: number;
     } | null = null;
 
+    // Soft capacity info only — coordinators are no longer hard-capped when adding mobilizers
     if (isCoordinator && !isAdmin) {
       coordinatorContext = await MobilizationRosterService.getCoordinatorMobilizerCapacityForUser(
         eventId,
@@ -238,7 +238,7 @@ router.get('/summary', authenticate, async (req: AuthRequest, res: Response): Pr
 
     res.json({
       maxAssignmentsPerMobilizer: MAX_MOBILIZER_ASSIGNMENTS,
-      maxMobilizersPerCoordinator: MAX_MOBILIZERS_PER_COORDINATOR,
+      maxMobilizersPerCoordinator: null,
       role: isAdmin ? 'admin' : role,
       canCoordinate: isAdmin || isCoordinator,
       canMobilize:
@@ -248,6 +248,8 @@ router.get('/summary', authenticate, async (req: AuthRequest, res: Response): Pr
       canManageMobilizers: isAdmin || isCoordinator,
       canManageCoordinators: isAdmin,
       canClaimVoters: role === EventMobilizationRoleType.MOBILIZER,
+      canAssignForMobilizers: isAdmin || isCoordinator,
+      canMarkVotedForMobilizers: isAdmin || isCoordinator,
       mobilizer: mobilizerContext,
       coordinator: coordinatorContext,
       event: {
@@ -344,7 +346,7 @@ router.post('/roles', authenticate, async (req: AuthRequest, res: Response): Pro
       role,
       req.user!.id,
       pc,
-      { enforceCoordinatorCapacity: !admin && role === EventMobilizationRoleType.MOBILIZER }
+      { enforceCoordinatorCapacity: false }
     );
     res.status(201).json({ role: row });
   } catch (error) {

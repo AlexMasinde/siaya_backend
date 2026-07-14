@@ -17,8 +17,8 @@ export class MobilizationAssignmentService {
   }
 
   /**
-   * Assign registered voters from a mobilizer's polling center (max 30).
-   * Mobilizers claim for themselves; coordinators/admins can assign on behalf of a mobilizer.
+   * Assign registered voters from a mobilizer's polling center (max 20).
+   * Mobilizers claim for themselves; coordinators can assign on behalf of mobilizers they added.
    */
   static async claimBatch(
     eventId: string,
@@ -52,9 +52,16 @@ export class MobilizationAssignmentService {
     );
 
     const current = await this.countForMobilizer(eventId, mobilizerUserId);
-    if (current + uniqueIds.length > MAX_MOBILIZER_ASSIGNMENTS) {
+    if (current >= MAX_MOBILIZER_ASSIGNMENTS) {
       throw new MobilizationAccessError(
-        `Cannot exceed ${MAX_MOBILIZER_ASSIGNMENTS} voters (currently ${current})`,
+        `Limit reached: this mobilizer already has ${MAX_MOBILIZER_ASSIGNMENTS} voters`,
+        400
+      );
+    }
+    if (current + uniqueIds.length > MAX_MOBILIZER_ASSIGNMENTS) {
+      const remaining = MAX_MOBILIZER_ASSIGNMENTS - current;
+      throw new MobilizationAccessError(
+        `Limit reached: this mobilizer can only take ${remaining} more voter${remaining === 1 ? '' : 's'} (max ${MAX_MOBILIZER_ASSIGNMENTS})`,
         400
       );
     }
