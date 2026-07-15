@@ -3,7 +3,7 @@ import { Event } from '../entities/Event';
 import { User, UserRole } from '../entities/User';
 import { EventMobilizationRoleType } from '../entities/EventMobilizationRole';
 
-export const MAX_MOBILIZER_ASSIGNMENTS = 30;
+export const MAX_MOBILIZER_ASSIGNMENTS = 20;
 export const MAX_MOBILIZERS_PER_COORDINATOR = 20;
 
 export class MobilizationAccessError extends Error {

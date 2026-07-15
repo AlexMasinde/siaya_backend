@@ -82,6 +82,16 @@ export class MobilizationOnboardingService {
     let password: string | undefined;
     let message: string;
 
+    if (user) {
+      const existingRole = await MobilizationRosterService.findRole(event.eventId, user.id);
+      if (existingRole) {
+        throw new MobilizationAccessError(
+          `This user is already a ${existingRole.role} on this campaign`,
+          400
+        );
+      }
+    }
+
     if (!user) {
       password = generateRandomPassword();
       const hashedPassword = await hashPassword(password);
@@ -97,29 +107,26 @@ export class MobilizationOnboardingService {
       created = true;
       smsSent = await smsService.sendUserCredentials(displayPhone, email, password);
       message = smsSent
-        ? 'Mobilizer created. Login credentials sent by SMS.'
-        : 'Mobilizer created. SMS failed — share credentials manually.';
+        ? 'Mobilizer created. Login email and password sent by SMS.'
+        : 'Mobilizer created. SMS failed — share the password shown below.';
     } else {
+      // Existing account: issue a fresh password so they can log in for mobilization
+      password = generateRandomPassword();
+      user.password = await hashPassword(password);
       if (user.phoneNumber !== displayPhone) {
         user.phoneNumber = displayPhone;
-        await userRepository.save(user);
       }
       if (user.name !== name) {
         user.name = name;
-        await userRepository.save(user);
       }
-      message = 'Existing user added to this campaign as a mobilizer.';
+      await userRepository.save(user);
+      smsSent = await smsService.sendUserCredentials(displayPhone, email, password);
+      message = smsSent
+        ? 'Existing user added as mobilizer. Login email and password sent by SMS.'
+        : 'Existing user added as mobilizer. SMS failed — share the password shown below.';
     }
 
     await ensureUserOnEvent(event.eventId, user.id);
-
-    const existingRole = await MobilizationRosterService.findRole(event.eventId, user.id);
-    if (existingRole) {
-      throw new MobilizationAccessError(
-        `This user is already a ${existingRole.role} on this campaign`,
-        400
-      );
-    }
 
     const role = await MobilizationRosterService.addRole(
       event.eventId,
@@ -140,7 +147,7 @@ export class MobilizationOnboardingService {
       role,
       created,
       smsSent,
-      ...(created && !smsSent && password ? { password } : {}),
+      ...(!smsSent && password ? { password } : {}),
       message,
     };
   }

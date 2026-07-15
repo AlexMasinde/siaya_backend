@@ -95,7 +95,7 @@ export class MobilizationCheckInService {
     );
     if (currentAssignments >= MAX_MOBILIZER_ASSIGNMENTS) {
       throw new MobilizationAccessError(
-        `You cannot exceed ${MAX_MOBILIZER_ASSIGNMENTS} voters on your mobilization list`,
+        `Limit reached: you already have ${MAX_MOBILIZER_ASSIGNMENTS} voters on your mobilization list`,
         400
       );
     }
